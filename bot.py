@@ -3,10 +3,6 @@ import os
 import re
 import zipfile
 import logging
-import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ACCOUNTS_DIR = os.path.join(BASE_DIR, "accounts")
-SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
