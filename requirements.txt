@@ -2,3 +2,4 @@ Telethon
 PySocks
 python-socks
 requests
+python-telegram-bot
