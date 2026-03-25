@@ -13,15 +13,14 @@ from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR
 
 
 class ProxyManager:
-    """Управление прокси с проверкой и лимитами"""
-
     def __init__(self):
-        self.proxies = []  # список прокси в формате кортежа
-        self.used_proxies = {}  # {proxy_tuple: {'count': int, 'last_used': datetime}}
-        self.max_uses_per_day = 2  # максимум 2 аккаунта на один прокси в день
+        self.proxies = []  # список кортежей (proxy, проверен)
+        self.used_proxies = {}
+        self.max_uses_per_day = 2
+        self.current_index = 0
 
     def load_proxies(self):
-        """Загружает свежие бесплатные SOCKS5 прокси с advanced.name"""
+        """Загружает прокси, проверяет, оставляет только рабочие"""
         url = "https://advanced.name/freeproxy?protocol=socks5&type=all"
         
         try:
@@ -29,87 +28,79 @@ class ProxyManager:
             if response.status_code != 200:
                 return 0
 
-            # Парсим HTML таблицу
             import re
-            # Ищем строки с IP:PORT
-            pattern = r'<tr[^>]*>.*?<td[^>]*>(\d+\.\d+\.\d+\.\d+)</td>.*?<td[^>]*>(\d+)</td>.*?</tr>'
+            pattern = r'<tr[^>]*>.*?<td[^>]*>(\d+\.\d+\.\d+\.\d+)</td>.*?<td[^>]*>(\d+)</td>'
             matches = re.findall(pattern, response.text, re.DOTALL)
             
             raw_proxies = []
             for ip, port in matches:
                 raw_proxies.append(f"{ip}:{port}")
             
-            # Очищаем от дубликатов
             unique_proxies = list(set(raw_proxies))
             
+            # Проверяем прокси, оставляем только рабочие
             self.proxies = []
-            for p_str in unique_proxies:
+            for p_str in unique_proxies[:50]:  # проверяем первые 50
                 parsed = self._parse_proxy(p_str)
-                if parsed:
+                if parsed and self._quick_check(parsed):
                     self.proxies.append(parsed)
+                    print(f"✅ Прокси работает: {parsed[1]}:{parsed[2]}")
             
+            self.current_index = 0
             return len(self.proxies)
         except Exception as e:
-            print(f"Ошибка загрузки прокси: {e}")
+            print(f"Ошибка загрузки: {e}")
             return 0
 
     def _parse_proxy(self, proxy_str):
-        """Преобразует строку в кортеж для Telethon"""
         clean_str = proxy_str.replace("socks5://", "").replace("http://", "")
         parts = clean_str.split(':')
-        
         try:
             host = parts[0]
             port = int(parts[1])
-            # Публичные прокси обычно без логина/пароля
             return (socks.SOCKS5, host, port, True, None, None)
         except Exception:
             return None
 
-    async def check_proxy(self, proxy):
-        """Проверяет, работает ли прокси"""
-        if not proxy:
-            return False
-        
+    def _quick_check(self, proxy):
+        """Быстрая проверка прокси через HTTP запрос к 1.1.1.1"""
         try:
-            client = TelegramClient('check_session', API_ID, API_HASH, proxy=proxy)
-            await client.connect()
-            is_connected = client.is_connected()
-            await client.disconnect()
-            return is_connected
+            import socket
+            sock = socks.socksocket()
+            sock.set_proxy(socks.SOCKS5, proxy[1], proxy[2])
+            sock.settimeout(3)
+            sock.connect(("1.1.1.1", 80))
+            sock.close()
+            return True
         except Exception:
             return False
 
     def can_use_proxy(self, proxy):
-        """Проверяет, не превышен ли лимит использования прокси"""
         if proxy not in self.used_proxies:
             return True
-        
         usage = self.used_proxies[proxy]
         if datetime.now() - usage['last_used'] > timedelta(days=1):
             del self.used_proxies[proxy]
             return True
-        
         return usage['count'] < self.max_uses_per_day
 
     def mark_used(self, proxy):
-        """Отмечает, что прокси использован"""
         if proxy not in self.used_proxies:
             self.used_proxies[proxy] = {'count': 0, 'last_used': datetime.now()}
-        
         self.used_proxies[proxy]['count'] += 1
         self.used_proxies[proxy]['last_used'] = datetime.now()
 
-    async def get_working_proxy(self):
-        """Возвращает рабочий прокси с учётом лимитов"""
-        import random
-        random.shuffle(self.proxies)
+    def get_working_proxy(self):
+        """Возвращает следующий рабочий прокси с ротацией"""
+        if not self.proxies:
+            return None
         
-        for proxy in self.proxies:
-            if not self.can_use_proxy(proxy):
-                continue
+        # Пробуем прокси по кругу, пока не найдём подходящий
+        for _ in range(len(self.proxies)):
+            proxy = self.proxies[self.current_index % len(self.proxies)]
+            self.current_index += 1
             
-            if await self.check_proxy(proxy):
+            if self.can_use_proxy(proxy):
                 return proxy
         
         return None
@@ -123,26 +114,29 @@ class TelegramFarm:
         self.sessions_dir = sessions_dir
         self.pending_registrations = {}
         self.proxy_manager = ProxyManager()
-
-    async def start_registration(self, phone, user_id):
-        # Создаём папки, если их нет
+        
         os.makedirs(self.accounts_dir, exist_ok=True)
         os.makedirs(self.sessions_dir, exist_ok=True)
 
-        # Получаем рабочий прокси
-        proxy = await self.proxy_manager.get_working_proxy()
+    def load_proxies(self):
+        return self.proxy_manager.load_proxies()
+
+    async def start_registration(self, phone, user_id):
+        proxy = self.proxy_manager.get_working_proxy()
         
         session_name = f"session_{phone.replace('+', '')}"
         session_path = os.path.join(self.sessions_dir, session_name)
 
-        if proxy:
-            client = TelegramClient(session_path, self.api_id, self.api_hash, proxy=proxy)
-        else:
-            client = TelegramClient(session_path, self.api_id, self.api_hash)
+        if not proxy:
+            print("⚠️ Нет рабочих прокси!")
+            return False, "Нет рабочих прокси. Попробуй позже."
+
+        print(f"✅ Используем прокси: {proxy[1]}:{proxy[2]}")
+        client = TelegramClient(session_path, self.api_id, self.api_hash, proxy=proxy)
 
         try:
-            await client.connect()
-
+            await asyncio.wait_for(client.connect(), timeout=15)
+            
             if await client.is_user_authorized():
                 await client.disconnect()
                 return False, "Аккаунт уже авторизован"
@@ -157,8 +151,15 @@ class TelegramFarm:
             }
             return True, f"Код отправлен на {phone}"
 
+        except asyncio.TimeoutError:
+            await client.disconnect()
+            # Если прокси не работает, удаляем его из списка
+            if proxy in self.proxy_manager.proxies:
+                self.proxy_manager.proxies.remove(proxy)
+                print(f"❌ Прокси {proxy[1]}:{proxy[2]} не работает, удалён из списка")
+            return False, "Таймаут подключения. Прокси не работает."
         except FloodWaitError as e:
-            return False, f"Ошибка: нужно подождать {e.seconds} сек"
+            return False, f"Нужно подождать {e.seconds} сек"
         except Exception as e:
             await client.disconnect()
             return False, f"Ошибка: {str(e)}"
