@@ -3,10 +3,7 @@ import json
 import zipfile
 import shutil
 import requests
-try:
-    import socks
-except ImportError:
-    from telethon.network import socks
+import socks as socks
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
