@@ -47,9 +47,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     accounts_count = len(farm.get_accounts_list())
     
     keyboard = [
-        [InlineKeyboardButton("📱 Зарегистрировать аккаунт", callback_data="register")],
+        [InlineKeyboardButton("📱 Регистрация", callback_data="register")],
+        [InlineKeyboardButton("🤖 АВТОФЕРМА", callback_data="auto_farm")],
         [InlineKeyboardButton("📦 Мои аккаунты", callback_data="my_accounts")],
-        [InlineKeyboardButton("📦 ВСЕ аккаунты (архив)", callback_data="export_all")],
+        [InlineKeyboardButton("📦 Все аккаунты", callback_data="export_all")],
         [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton("❓ Помощь", callback_data="help")],
     ]
@@ -84,6 +85,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['state'] = WAITING_PHONE
         
+    elif data == "auto_farm":
+        await auto_farm(query, context)
     elif data == "my_accounts":
         await show_my_accounts(query, context)
     elif data == "export_all":
@@ -103,6 +106,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("cancel_reg_"):
         phone = data.replace("cancel_reg_", "")
         await cancel_registration(query, context, phone)
+
+
+async def auto_farm(query, context):
+    """Автоматическая регистрация через Tiger SMS"""
+    await query.edit_message_text("🤖 Запускаю автоферму...\n\n⏳ Покупаю номер и регистрирую аккаунт...")
+    
+    success, message, account_data = await farm.auto_register(query.from_user.id)
+    
+    if success:
+        await query.message.reply_text(f"✅ {message}\n\n📱 Номер: {account_data['phone']}")
+        
+        zip_file = os.path.join(ACCOUNTS_DIR, f"{account_data['phone'].replace('+', '')}.zip")
+        if os.path.exists(zip_file):
+            with open(zip_file, 'rb') as f:
+                await query.message.reply_document(
+                    document=f,
+                    filename=os.path.basename(zip_file),
+                    caption=f"✅ Аккаунт {account_data['phone']} готов!"
+                )
+    else:
+        await query.message.reply_text(f"❌ {message}")
+    
+    await back_to_menu(query, context)
 
 
 async def show_my_accounts(query, context):
@@ -137,7 +163,6 @@ async def generate_qr(query, context, filename):
     await query.edit_message_text("⏳ Генерирую QR-код...")
     
     try:
-        # Извлекаем session_string из архива
         with zipfile.ZipFile(file_path, 'r') as zf:
             session_string = None
             for file in zf.namelist():
@@ -155,26 +180,23 @@ async def generate_qr(query, context, filename):
             await query.edit_message_text("❌ Не удалось найти session_string в архиве")
             return
         
-        # Генерируем QR-код
         qr = qrcode.QRCode(box_size=8, border=2)
         qr.add_data(session_string)
         qr.make(fit=True)
         
         img = qr.make_image(fill_color="black", back_color="white")
         
-        # Сохраняем в буфер
         buf = BytesIO()
         img.save(buf, format='PNG')
         buf.seek(0)
         
-        # Отправляем QR-код
         await query.message.reply_photo(
             photo=buf,
             caption=f"🔑 *QR-код для входа*\n\n"
                     f"📱 *Как войти:*\n"
                     f"• *Android:* Telegram → «Войти по QR-коду» → сканируй\n"
                     f"• *iPhone:* Настройки → Устройства → Сканировать QR\n\n"
-                    f"⚠️ QR-код одноразовый! После сканирования аккаунт привяжется к телефону.",
+                    f"⚠️ QR-код одноразовый!",
             parse_mode=ParseMode.MARKDOWN
         )
         
@@ -327,7 +349,7 @@ async def cancel_registration(query, context, phone):
 async def show_stats(query, context):
     accounts = farm.get_accounts_list()
     pending = len(farm.pending_registrations)
-    proxies = len(farm.proxies)
+    proxies = len(farm.proxy_manager.proxies)
     
     await query.edit_message_text(
         f"📊 *Статистика*\n\n"
@@ -343,18 +365,18 @@ async def show_help(query, context):
     help_text = (
         "🤖 *Telegram Farm Bot*\n\n"
         "*Как продавать аккаунты:*\n\n"
-        "1️⃣ *Регистрация*\n"
+        "1️⃣ *Автоферма*\n"
+        "   • Нажми «АВТОФЕРМА»\n"
+        "   • Бот сам покупает номер, получает код, регистрирует аккаунт\n"
+        "   • Присылает готовый архив\n\n"
+        "2️⃣ *Ручная регистрация*\n"
         "   • Нажми «Регистрация»\n"
         "   • Введи номер из Tiger SMS\n"
         "   • Введи код\n"
         "   • Получи архив\n\n"
-        "2️⃣ *Продажа*\n"
+        "3️⃣ *Продажа*\n"
         "   • «Мои аккаунты» → скачать архив (TData)\n"
         "   • Или нажать «QR» → отправить QR-код покупателю\n\n"
-        "3️⃣ *Как войти покупателю*\n"
-        "   • QR-код: Android → «Войти по QR-коду»\n"
-        "   • QR-код: iPhone → Настройки → Устройства\n"
-        "   • TData: распаковать в папку Telegram Desktop\n\n"
         f"📁 Папка: {ACCOUNTS_DIR}"
     )
     
@@ -367,10 +389,11 @@ async def show_help(query, context):
 
 async def back_to_menu(query, context):
     accounts_count = len(farm.get_accounts_list())
-    proxies_count = len(farm.proxies)
+    proxies_count = len(farm.proxy_manager.proxies)
     
     keyboard = [
         [InlineKeyboardButton("📱 Регистрация", callback_data="register")],
+        [InlineKeyboardButton("🤖 АВТОФЕРМА", callback_data="auto_farm")],
         [InlineKeyboardButton("📦 Мои аккаунты", callback_data="my_accounts")],
         [InlineKeyboardButton("📦 Все аккаунты", callback_data="export_all")],
         [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
@@ -392,6 +415,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
     print("🤖 Бот запущен!")
+    print("🤖 Автоферма подключена (Tiger SMS API)")
     print("📱 QR-код для входа доступен в разделе «Мои аккаунты»")
     print("📁 Аккаунты:", ACCOUNTS_DIR)
     print("=" * 50)
