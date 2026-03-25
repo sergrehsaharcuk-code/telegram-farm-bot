@@ -14,13 +14,12 @@ from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR
 
 class ProxyManager:
     def __init__(self):
-        self.proxies = []  # список кортежей (proxy, проверен)
+        self.proxies = []
         self.used_proxies = {}
         self.max_uses_per_day = 2
         self.current_index = 0
 
     def load_proxies(self):
-        """Загружает прокси, проверяет, оставляет только рабочие"""
         url = "https://advanced.name/freeproxy?protocol=socks5&type=all"
         
         try:
@@ -38,9 +37,8 @@ class ProxyManager:
             
             unique_proxies = list(set(raw_proxies))
             
-            # Проверяем прокси, оставляем только рабочие
             self.proxies = []
-            for p_str in unique_proxies[:50]:  # проверяем первые 50
+            for p_str in unique_proxies[:50]:
                 parsed = self._parse_proxy(p_str)
                 if parsed and self._quick_check(parsed):
                     self.proxies.append(parsed)
@@ -63,7 +61,6 @@ class ProxyManager:
             return None
 
     def _quick_check(self, proxy):
-        """Быстрая проверка прокси через HTTP запрос к 1.1.1.1"""
         try:
             import socket
             sock = socks.socksocket()
@@ -91,11 +88,9 @@ class ProxyManager:
         self.used_proxies[proxy]['last_used'] = datetime.now()
 
     def get_working_proxy(self):
-        """Возвращает следующий рабочий прокси с ротацией"""
         if not self.proxies:
             return None
         
-        # Пробуем прокси по кругу, пока не найдём подходящий
         for _ in range(len(self.proxies)):
             proxy = self.proxies[self.current_index % len(self.proxies)]
             self.current_index += 1
@@ -153,7 +148,6 @@ class TelegramFarm:
 
         except asyncio.TimeoutError:
             await client.disconnect()
-            # Если прокси не работает, удаляем его из списка
             if proxy in self.proxy_manager.proxies:
                 self.proxy_manager.proxies.remove(proxy)
                 print(f"❌ Прокси {proxy[1]}:{proxy[2]} не работает, удалён из списка")
@@ -178,6 +172,10 @@ class TelegramFarm:
             me = await client.get_me()
             session_string = client.session.save()
             
+            # Проверяем, что session_string не пустой
+            if not session_string:
+                return False, "❌ Не удалось получить session_string", None
+
             if proxy:
                 self.proxy_manager.mark_used(proxy)
 
