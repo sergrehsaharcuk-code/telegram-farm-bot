@@ -1,5 +1,4 @@
-telethon
-python-telegram-bot
-requests
+Telethon
 PySocks
 python-socks
+requests
