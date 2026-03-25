@@ -9,11 +9,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
 
-from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR
-
-# Конфигурация Tiger SMS API
-TIGER_API_KEY = "5lSQtpVENAT4WoIHx8LfVRyPCqKquAx5"
-TIGER_API_URL = "https://api.tiger-sms.com/stubs/handler_api.php"
+from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
 
 
 class TigerSMS:
@@ -21,13 +17,13 @@ class TigerSMS:
     
     def __init__(self, api_key):
         self.api_key = api_key
-        self.active_numbers = {}  # {phone: {'id': id, 'status': status}}
+        self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
+        self.active_numbers = {}
     
     def _request(self, params):
-        """Отправляет запрос к API Tiger SMS"""
         params['api_key'] = self.api_key
         try:
-            response = requests.get(TIGER_API_URL, params=params, timeout=30)
+            response = requests.get(self.api_url, params=params, timeout=30)
             return response.text.strip()
         except Exception as e:
             print(f"Ошибка запроса к Tiger SMS: {e}")
@@ -51,7 +47,7 @@ class TigerSMS:
         return None, None
     
     def get_code(self, number_id, timeout=120):
-        """Ждёт код SMS (максимум timeout секунд)"""
+        """Ждёт код SMS"""
         import time
         start_time = time.time()
         
@@ -73,11 +69,11 @@ class TigerSMS:
         return None
     
     def cancel_number(self, number_id):
-        """Отменяет номер (если код не пришёл)"""
+        """Отменяет номер"""
         self._request({
             'action': 'setStatus',
             'id': number_id,
-            'status': 8  # 8 = cancel
+            'status': 8
         })
 
 
@@ -189,31 +185,27 @@ class TelegramFarm:
     async def auto_register(self, user_id):
         """Автоматическая регистрация аккаунта через Tiger SMS"""
         
-        # 1. Покупаем номер
         print("📱 Покупаю номер...")
         phone, number_id = self.tiger_sms.get_number()
         if not phone:
-            return False, "Не удалось купить номер. Проверь баланс на Tiger SMS."
+            return False, "Не удалось купить номер. Проверь баланс на Tiger SMS.", None
         
         print(f"✅ Номер куплен: {phone}")
         
-        # 2. Отправляем запрос на регистрацию
         success, message = await self.start_registration(phone, user_id)
         if not success:
             self.tiger_sms.cancel_number(number_id)
-            return False, f"Ошибка при отправке кода: {message}"
+            return False, f"Ошибка при отправке кода: {message}", None
         
-        # 3. Ждём код из SMS
         print("⏳ Жду код...")
         code = self.tiger_sms.get_code(number_id, timeout=120)
         
         if not code:
             self.tiger_sms.cancel_number(number_id)
-            return False, "Код не пришёл за 2 минуты"
+            return False, "Код не пришёл за 2 минуты", None
         
         print(f"📨 Получен код: {code}")
         
-        # 4. Завершаем регистрацию
         success, message, account_data = await self.complete_registration(phone, code)
         
         if success:
