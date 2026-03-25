@@ -1,5 +1,4 @@
-Telethon
-PySocks
-python-socks
-requests
-python-telegram-bot
+telethon==1.37.0
+python-telegram-bot==20.7
+requests==2.31.0
+PySocks==1.7.1
