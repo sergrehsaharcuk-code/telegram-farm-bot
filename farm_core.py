@@ -11,6 +11,10 @@ from telethon.errors import PhoneCodeInvalidError, FloodWaitError
 
 from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR
 
+# Создаём папки, если их нет
+os.makedirs(ACCOUNTS_DIR, exist_ok=True)
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
 
 class ProxyManager:
     """Управление прокси с проверкой и лимитами"""
