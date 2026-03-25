@@ -2,7 +2,11 @@ import asyncio
 import os
 import re
 import zipfile
+import json
+import qrcode
 import logging
+from io import BytesIO
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
@@ -22,6 +26,7 @@ farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
 
 
 def clean_phone_number(raw_phone):
+    """Очищает номер телефона от лишних символов"""
     phone = re.sub(r'[^\d+]', '', raw_phone)
     if phone.startswith('8') and len(phone) == 11:
         phone = '+7' + phone[1:]
@@ -92,9 +97,91 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("download_"):
         filename = data.replace("download_", "")
         await download_account(query, context, filename)
+    elif data.startswith("qr_"):
+        filename = data.replace("qr_", "") + ".zip"
+        await generate_qr(query, context, filename)
     elif data.startswith("cancel_reg_"):
         phone = data.replace("cancel_reg_", "")
         await cancel_registration(query, context, phone)
+
+
+async def show_my_accounts(query, context):
+    accounts = farm.get_accounts_list()
+    
+    if not accounts:
+        await query.edit_message_text("📭 Нет аккаунтов")
+        return
+    
+    keyboard = []
+    for acc in accounts:
+        acc_name = acc.replace('.zip', '')
+        keyboard.append([
+            InlineKeyboardButton(f"📱 {acc_name}", callback_data=f"download_{acc}"),
+            InlineKeyboardButton(f"🔲 QR", callback_data=f"qr_{acc}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text("📦 Выбери аккаунт:", reply_markup=reply_markup)
+
+
+async def generate_qr(query, context, filename):
+    """Генерирует QR-код для входа в аккаунт"""
+    file_path = os.path.join(ACCOUNTS_DIR, filename)
+    
+    if not os.path.exists(file_path):
+        await query.edit_message_text("❌ Аккаунт не найден")
+        return
+    
+    await query.edit_message_text("⏳ Генерирую QR-код...")
+    
+    try:
+        # Извлекаем session_string из архива
+        with zipfile.ZipFile(file_path, 'r') as zf:
+            session_string = None
+            for file in zf.namelist():
+                if file.endswith('info.json'):
+                    with zf.open(file) as f:
+                        info = json.load(f)
+                        session_string = info.get('session_string')
+                        break
+                elif file.endswith('auth_key.txt'):
+                    with zf.open(file) as f:
+                        session_string = f.read().decode('utf-8').strip()
+                        break
+        
+        if not session_string:
+            await query.edit_message_text("❌ Не удалось найти session_string в архиве")
+            return
+        
+        # Генерируем QR-код
+        qr = qrcode.QRCode(box_size=8, border=2)
+        qr.add_data(session_string)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Сохраняем в буфер
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        
+        # Отправляем QR-код
+        await query.message.reply_photo(
+            photo=buf,
+            caption=f"🔑 *QR-код для входа*\n\n"
+                    f"📱 *Как войти:*\n"
+                    f"• *Android:* Telegram → «Войти по QR-коду» → сканируй\n"
+                    f"• *iPhone:* Настройки → Устройства → Сканировать QR\n\n"
+                    f"⚠️ QR-код одноразовый! После сканирования аккаунт привяжется к телефону.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        await query.edit_message_text("✅ QR-код отправлен!")
+        
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,23 +266,6 @@ async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TY
         await status_msg.edit_text(f"❌ {message}")
 
 
-async def show_my_accounts(query, context):
-    accounts = farm.get_accounts_list()
-    
-    if not accounts:
-        await query.edit_message_text("📭 Нет аккаунтов")
-        return
-    
-    keyboard = []
-    for acc in accounts:
-        keyboard.append([InlineKeyboardButton(f"📱 {acc}", callback_data=f"download_{acc}")])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text("📦 Выбери аккаунт:", reply_markup=reply_markup)
-
-
 async def export_all_accounts(query, context):
     accounts = farm.get_accounts_list()
     
@@ -272,10 +342,19 @@ async def show_stats(query, context):
 async def show_help(query, context):
     help_text = (
         "🤖 *Telegram Farm Bot*\n\n"
-        "1️⃣ Нажми «Регистрация»\n"
-        "2️⃣ Введи номер телефона\n"
-        "3️⃣ Введи код из SMS\n"
-        "4️⃣ Скачай архив\n\n"
+        "*Как продавать аккаунты:*\n\n"
+        "1️⃣ *Регистрация*\n"
+        "   • Нажми «Регистрация»\n"
+        "   • Введи номер из Tiger SMS\n"
+        "   • Введи код\n"
+        "   • Получи архив\n\n"
+        "2️⃣ *Продажа*\n"
+        "   • «Мои аккаунты» → скачать архив (TData)\n"
+        "   • Или нажать «QR» → отправить QR-код покупателю\n\n"
+        "3️⃣ *Как войти покупателю*\n"
+        "   • QR-код: Android → «Войти по QR-коду»\n"
+        "   • QR-код: iPhone → Настройки → Устройства\n"
+        "   • TData: распаковать в папку Telegram Desktop\n\n"
         f"📁 Папка: {ACCOUNTS_DIR}"
     )
     
@@ -313,7 +392,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
     print("🤖 Бот запущен!")
-    print("🌐 Прокси загружаются автоматически")
+    print("📱 QR-код для входа доступен в разделе «Мои аккаунты»")
     print("📁 Аккаунты:", ACCOUNTS_DIR)
     print("=" * 50)
     
