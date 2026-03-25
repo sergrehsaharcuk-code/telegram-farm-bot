@@ -3,32 +3,28 @@ import json
 import zipfile
 import shutil
 import requests
-import socks as socks
-from datetime import datetime
+import socks
+import asyncio
+from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
 
 from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR
 
 
-class TelegramFarm:
-    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir):
-        self.api_id = api_id
-        self.api_hash = api_hash
-        self.accounts_dir = accounts_dir
-        self.sessions_dir = sessions_dir
-        self.pending_registrations = {}
-        self.proxies = []
-        self.proxy_index = 0
-        
-        os.makedirs(self.accounts_dir, exist_ok=True)
-        os.makedirs(self.sessions_dir, exist_ok=True)
-
+class ProxyManager:
+    """Управление прокси с проверкой и лимитами"""
+    
+    def __init__(self):
+        self.proxies = []  # список прокси в формате кортежа
+        self.used_proxies = {}  # {proxy_tuple: {'count': int, 'last_used': datetime}}
+        self.max_uses_per_day = 2  # максимум 2 аккаунта на один прокси в день
+    
     def load_proxies(self):
-        """Загружает бесплатные прокси"""
+        """Загружает и подготавливает прокси"""
         urls = [
-            "https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/MostStable/socks5.txt",
-            "https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/Stable/socks5.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
         ]
         
         raw_list = []
@@ -49,7 +45,7 @@ class TelegramFarm:
                 self.proxies.append(parsed)
         
         return len(self.proxies)
-
+    
     def _parse_proxy(self, proxy_str):
         """Преобразует строку в кортеж для Telethon"""
         clean_str = proxy_str.replace("socks5://", "").replace("http://", "")
@@ -63,47 +59,100 @@ class TelegramFarm:
             return (socks.SOCKS5, host, port, True, user, password)
         except Exception:
             return None
+    
+    async def check_proxy(self, proxy):
+        """Проверяет, работает ли прокси"""
+        if not proxy:
+            return False
+        
+        try:
+            # Создаём клиента с прокси
+            client = TelegramClient('check_session', API_ID, API_HASH, proxy=proxy)
+            await client.connect()
+            
+            # Проверяем, что подключились
+            is_connected = client.is_connected()
+            await client.disconnect()
+            
+            return is_connected
+        except Exception:
+            return False
+    
+    def can_use_proxy(self, proxy):
+        """Проверяет, не превышен ли лимит использования прокси"""
+        if proxy not in self.used_proxies:
+            return True
+        
+        usage = self.used_proxies[proxy]
+        
+        # Сбрасываем счётчик, если прошёл день
+        if datetime.now() - usage['last_used'] > timedelta(days=1):
+            del self.used_proxies[proxy]
+            return True
+        
+        return usage['count'] < self.max_uses_per_day
+    
+    def mark_used(self, proxy):
+        """Отмечает, что прокси использован"""
+        if proxy not in self.used_proxies:
+            self.used_proxies[proxy] = {'count': 0, 'last_used': datetime.now()}
+        
+        self.used_proxies[proxy]['count'] += 1
+        self.used_proxies[proxy]['last_used'] = datetime.now()
+    
+    async def get_working_proxy(self):
+        """Возвращает рабочий прокси с учётом лимитов"""
+        # Перемешиваем список
+        import random
+        random.shuffle(self.proxies)
+        
+        for proxy in self.proxies:
+            # Проверяем лимиты
+            if not self.can_use_proxy(proxy):
+                continue
+            
+            # Проверяем, работает ли прокси
+            if await self.check_proxy(proxy):
+                return proxy
+        
+        return None  # Нет рабочих прокси
 
-    def get_next_proxy(self):
-        """Возвращает следующий прокси"""
-        if not self.proxies:
-            return None
-        proxy = self.proxies[self.proxy_index % len(self.proxies)]
-        self.proxy_index += 1
-        return proxy
+
+class TelegramFarm:
+    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir):
+        self.api_id = api_id
+        self.api_hash = api_hash
+        self.accounts_dir = accounts_dir
+        self.sessions_dir = sessions_dir
+        self.pending_registrations = {}
+        self.proxy_manager = ProxyManager()
 
     async def start_registration(self, phone, user_id):
-        proxy = self.get_next_proxy()
+        # Получаем рабочий прокси
+        proxy = await self.proxy_manager.get_working_proxy()
         
-        phone_clean = phone.replace('+', '').replace(' ', '')
-        session_path = os.path.join(self.sessions_dir, f"temp_{phone_clean}")
+        session_name = f"session_{phone.replace('+', '')}"
+        session_path = os.path.join(self.sessions_dir, session_name)
 
         if proxy:
-            client = TelegramClient(
-                session_path, 
-                self.api_id, 
-                self.api_hash, 
-                proxy=proxy,
-                device_model="iPhone 15 Pro",
-                system_version="17.4.1"
-            )
+            client = TelegramClient(session_path, self.api_id, self.api_hash, proxy=proxy)
         else:
             client = TelegramClient(session_path, self.api_id, self.api_hash)
 
         try:
             await client.connect()
-            
+
             if await client.is_user_authorized():
                 await client.disconnect()
                 return False, "Аккаунт уже авторизован"
 
-            sent_code = await client.send_code_request(phone)
-            
+            await client.send_code_request(phone)
+
             self.pending_registrations[phone] = {
                 'client': client,
-                'phone_hash': sent_code.phone_code_hash,
                 'session_path': session_path,
-                'user_id': user_id
+                'user_id': user_id,
+                'proxy': proxy
             }
             return True, f"Код отправлен на {phone}"
 
@@ -115,21 +164,26 @@ class TelegramFarm:
 
     async def complete_registration(self, phone, code):
         if phone not in self.pending_registrations:
-            return False, "Регистрация не найдена", None
+            return False, "Нет ожидающей регистрации", None
 
-        reg_data = self.pending_registrations[phone]
-        client = reg_data['client']
-        phone_clean = phone.replace('+', '').replace(' ', '')
+        data = self.pending_registrations[phone]
+        client = data['client']
+        proxy = data.get('proxy')
 
         try:
-            await client.sign_in(phone, code, phone_code_hash=reg_data['phone_hash'])
-            
+            await client.sign_in(phone, code)
+
             me = await client.get_me()
             session_string = client.session.save()
             
+            # Если использовали прокси — отмечаем
+            if proxy:
+                self.proxy_manager.mark_used(proxy)
+
             await client.disconnect()
 
-            account_folder = os.path.join(self.accounts_dir, phone_clean)
+            folder_name = phone.replace('+', '')
+            account_folder = os.path.join(self.accounts_dir, folder_name)
             os.makedirs(account_folder, exist_ok=True)
 
             with open(os.path.join(account_folder, "auth_key.txt"), "w") as f:
@@ -139,19 +193,17 @@ class TelegramFarm:
                 "phone": me.phone,
                 "id": me.id,
                 "first_name": me.first_name,
-                "username": me.username,
                 "session_string": session_string,
-                "date_added": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             with open(os.path.join(account_folder, "info.json"), "w", encoding="utf-8") as f:
                 json.dump(info, f, ensure_ascii=False, indent=4)
 
-            temp_session_file = reg_data['session_path'] + ".session"
-            final_session_file = os.path.join(account_folder, f"{phone_clean}.session")
-            if os.path.exists(temp_session_file):
-                shutil.move(temp_session_file, final_session_file)
+            session_file = f"{client.session.filename}.session"
+            if os.path.exists(session_file):
+                shutil.copy(session_file, os.path.join(account_folder, f"{folder_name}.session"))
 
-            archive_path = os.path.join(self.accounts_dir, f"{phone_clean}.zip")
+            archive_path = os.path.join(self.accounts_dir, f"{folder_name}.zip")
             with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for root, _, files in os.walk(account_folder):
                     for file in files:
@@ -159,6 +211,7 @@ class TelegramFarm:
                         zipf.write(full_path, os.path.relpath(full_path, self.accounts_dir))
 
             del self.pending_registrations[phone]
+
             return True, f"✅ Аккаунт {phone} сохранен!", info
 
         except PhoneCodeInvalidError:
