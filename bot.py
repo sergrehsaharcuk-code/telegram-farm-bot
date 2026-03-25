@@ -26,7 +26,6 @@ farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
 
 
 def clean_phone_number(raw_phone):
-    """Очищает номер телефона от лишних символов"""
     phone = re.sub(r'[^\d+]', '', raw_phone)
     if phone.startswith('8') and len(phone) == 11:
         phone = '+7' + phone[1:]
@@ -109,7 +108,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def auto_farm(query, context):
-    """Автоматическая регистрация через Tiger SMS"""
     await query.edit_message_text("🤖 Запускаю автоферму...\n\n⏳ Покупаю номер и регистрирую аккаунт...")
     
     success, message, account_data = await farm.auto_register(query.from_user.id)
@@ -153,7 +151,6 @@ async def show_my_accounts(query, context):
 
 
 async def generate_qr(query, context, filename):
-    """Генерирует QR-код для входа в аккаунт"""
     file_path = os.path.join(ACCOUNTS_DIR, filename)
     
     if not os.path.exists(file_path):
