@@ -18,7 +18,6 @@ class TigerSMS:
         self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.active_numbers = {}
         self.countries_cache = None
-        self.prices_cache = None
     
     def _request(self, params):
         params['api_key'] = self.api_key
@@ -37,21 +36,28 @@ class TigerSMS:
             return self.countries_cache
         
         result = self._request({'action': 'getCountries'})
+        print(f"===== GET COUNTRIES RESPONSE =====")
+        print(result)
+        print(f"==================================")
+        
         if result:
             try:
                 data = json.loads(result)
                 countries = {}
                 for country_id, info in data.items():
                     if isinstance(info, dict):
-                        # Пробуем получить русское название
-                        name = info.get('name_ru') or info.get('name') or info.get('country')
+                        # Пробуем получить название
+                        name = info.get('name_ru') or info.get('name') or info.get('country') or info.get('title')
                         if name:
                             countries[country_id] = name
-                self.countries_cache = countries
-                print(f"✅ Загружены страны: {len(countries)}")
-                return countries
+                if countries:
+                    self.countries_cache = countries
+                    print(f"✅ Загружены страны: {len(countries)}")
+                    return countries
             except Exception as e:
                 print(f"Ошибка парсинга стран: {e}")
+        
+        print("⚠️ API не вернул названия стран")
         return {}
     
     def get_balance(self):
@@ -63,57 +69,58 @@ class TigerSMS:
                 return None
         return None
     
-    def get_prices_with_operators(self):
-        """Получает цены с операторами для каждой страны"""
+    def get_prices(self):
+        """Получает реальные цены на номера для Telegram"""
+        countries = self.get_countries()
+        
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
         
         try:
             data = json.loads(result)
-            countries = self.get_countries()
-            prices_data = {}
+            prices = []
             
             for country_id, services in data.items():
                 if 'tg' in services:
                     tg_data = services['tg']
-                    country_name = countries.get(country_id, f"Страна {country_id}")
                     
-                    operators = []
-                    min_price = float('inf')
-                    
-                    # Если список операторов
+                    # Может быть список операторов или один объект
                     if isinstance(tg_data, list):
                         for op in tg_data:
-                            if 'cost' in op:
-                                price = float(op['cost'])
-                                if price < min_price:
-                                    min_price = price
-                                operators.append({
-                                    'price': price,
-                                    'operator': op.get('operator', 'Неизвестно'),
-                                    'count': op.get('count', 0)
-                                })
+                            price = float(op.get('cost', 0))
+                            operator = op.get('operator', 'Стандартный')
+                            count = op.get('count', 0)
+                            
+                            country_name = countries.get(country_id, f"Страна {country_id}")
+                            
+                            prices.append({
+                                'id': country_id,
+                                'name': country_name,
+                                'operator': operator,
+                                'price': price,
+                                'count': count
+                            })
                     else:
-                        # Один вариант
                         price = float(tg_data.get('cost', 0))
-                        min_price = price
-                        operators.append({
+                        operator = 'Стандартный'
+                        count = tg_data.get('count', 0)
+                        
+                        country_name = countries.get(country_id, f"Страна {country_id}")
+                        
+                        prices.append({
+                            'id': country_id,
+                            'name': country_name,
+                            'operator': operator,
                             'price': price,
-                            'operator': 'Стандартный',
-                            'count': tg_data.get('count', 0)
+                            'count': count
                         })
-                    
-                    prices_data[country_id] = {
-                        'id': country_id,
-                        'name': country_name,
-                        'min_price': min_price,
-                        'operators': sorted(operators, key=lambda x: x['price'])
-                    }
             
-            self.prices_cache = prices_data
-            print(f"✅ Получены цены для {len(prices_data)} стран")
-            return prices_data
+            # Сортируем по цене
+            prices.sort(key=lambda x: x['price'])
+            
+            print(f"✅ Получены цены для {len(prices)} вариантов")
+            return prices
                 
         except json.JSONDecodeError as e:
             print(f"❌ Ошибка парсинга JSON: {e}")
@@ -237,7 +244,7 @@ class TelegramFarm:
     def load_proxies(self):
         return self.proxy_manager.load_proxies()
 
-    async def buy_number_with_operator(self, user_id, country_id, operator=None):
+    async def buy_number_with_operator(self, user_id, country_id, operator):
         """Покупает номер с конкретным оператором"""
         print(f"📱 Покупаю номер в стране {country_id}...")
         
