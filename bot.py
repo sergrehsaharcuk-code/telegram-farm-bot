@@ -42,7 +42,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У вас нет доступа")
         return
     
-    proxies_count = farm.load_proxies()
+    # Не вызываем load_proxies() здесь — берём из памяти
+    proxies_count = len(farm.proxy_manager.proxies)
     accounts_count = len(farm.get_accounts_list())
     
     keyboard = [
@@ -57,7 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"🤖 *Telegram Farm Bot*\n\n"
-        f"🌐 Прокси: {proxies_count}\n"
+        f"🌐 Прокси в памяти: {proxies_count}\n"
         f"📁 Аккаунтов: {accounts_count}\n"
         f"⏳ В процессе: {len(farm.pending_registrations)}",
         reply_markup=reply_markup,
@@ -405,15 +406,17 @@ async def back_to_menu(query, context):
 
 
 def main():
+    # Загружаем прокси один раз при старте
+    print("🌐 Загрузка прокси...")
+    farm.load_proxies()
+    
     app = Application.builder().token(BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    print("🤖 Бот запущен!")
-    print("🤖 Автоферма подключена (Tiger SMS API)")
-    print("📱 QR-код для входа доступен в разделе «Мои аккаунты»")
+    print("🤖 Бот запущен и готов к работе!")
     print("📁 Аккаунты:", ACCOUNTS_DIR)
     print("=" * 50)
     
