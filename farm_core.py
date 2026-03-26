@@ -23,14 +23,13 @@ class TigerSMS:
         try:
             response = requests.get(self.api_url, params=params, timeout=30)
             result = response.text.strip()
-            print(f"Tiger SMS: {result}")
+            print(f"Tiger SMS ответ: {result[:200]}")  # первые 200 символов
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
     def get_balance(self):
-        """Получает баланс"""
         result = self._request({'action': 'getBalance'})
         if result and result.startswith('ACCESS_BALANCE'):
             try:
@@ -42,13 +41,24 @@ class TigerSMS:
     def get_prices(self):
         """Получает цены на номера для Telegram"""
         result = self._request({'action': 'getPrices', 'service': 'tg'})
-        if result:
-            try:
-                import json
-                return json.loads(result)
-            except:
-                return None
-        return None
+        if not result:
+            return None
+        
+        # Пробуем распарсить JSON
+        try:
+            data = json.loads(result)
+            prices = {}
+            for country, info in data.items():
+                if isinstance(info, dict):
+                    cost = info.get('cost', 0)
+                    # Если цена в копейках, делим на 100
+                    if cost > 100:
+                        cost = cost / 100
+                    prices[country] = cost
+            return prices
+        except:
+            # Если не JSON, пробуем другой формат
+            return None
     
     def get_number(self, service="tg", country="any"):
         result = self._request({
