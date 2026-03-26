@@ -42,7 +42,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ У вас нет доступа")
         return
     
-    # Не вызываем load_proxies() здесь — берём из памяти
     proxies_count = len(farm.proxy_manager.proxies)
     accounts_count = len(farm.get_accounts_list())
     
@@ -58,7 +57,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"🤖 *Telegram Farm Bot*\n\n"
-        f"🌐 Прокси в памяти: {proxies_count}\n"
+        f"🌐 Прокси: {proxies_count}\n"
         f"📁 Аккаунтов: {accounts_count}\n"
         f"⏳ В процессе: {len(farm.pending_registrations)}",
         reply_markup=reply_markup,
@@ -86,7 +85,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = WAITING_PHONE
         
     elif data == "auto_farm":
-        await auto_farm(query, context)
+        await show_countries(query, context)
+    elif data.startswith("buy_"):
+        country = data.replace("buy_", "")
+        await buy_number(query, context, country)
     elif data == "my_accounts":
         await show_my_accounts(query, context)
     elif data == "export_all":
@@ -108,10 +110,38 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cancel_registration(query, context, phone)
 
 
-async def auto_farm(query, context):
-    await query.edit_message_text("🤖 Запускаю автоферму...\n\n⏳ Покупаю номер и регистрирую аккаунт...")
+async def show_countries(query, context):
+    """Показывает список стран с ценами"""
+    await query.edit_message_text("⏳ Загружаю цены...")
     
-    success, message, account_data = await farm.auto_register(query.from_user.id)
+    prices = farm.tiger_sms.get_prices()
+    if not prices:
+        await query.edit_message_text("❌ Не удалось загрузить цены")
+        return
+    
+    keyboard = []
+    for country, data in prices.items():
+        price = data.get('cost', 0) / 100
+        keyboard.append([InlineKeyboardButton(
+            f"📱 {country.upper()} - {price:.2f} руб", 
+            callback_data=f"buy_{country}"
+        )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    
+    await query.edit_message_text(
+        "💸 *Выбери страну для номера:*\n\n"
+        "Цены указаны за один номер.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def buy_number(query, context, country):
+    """Покупает номер в выбранной стране"""
+    await query.edit_message_text(f"🤖 Покупаю номер в {country.upper()}...\n\n⏳ Жди, это может занять минуту.")
+    
+    success, message, account_data = await farm.auto_register_country(query.from_user.id, country)
     
     if success:
         await query.message.reply_text(f"✅ {message}\n\n📱 Номер: {account_data['phone']}")
@@ -365,13 +395,12 @@ async def show_help(query, context):
         "*Как продавать аккаунты:*\n\n"
         "1️⃣ *Автоферма*\n"
         "   • Нажми «АВТОФЕРМА»\n"
-        "   • Бот сам покупает номер, получает код, регистрирует аккаунт\n"
-        "   • Присылает готовый архив\n\n"
+        "   • Выбери страну\n"
+        "   • Бот сам купит номер и зарегистрирует аккаунт\n\n"
         "2️⃣ *Ручная регистрация*\n"
         "   • Нажми «Регистрация»\n"
         "   • Введи номер из Tiger SMS\n"
-        "   • Введи код\n"
-        "   • Получи архив\n\n"
+        "   • Введи код\n\n"
         "3️⃣ *Продажа*\n"
         "   • «Мои аккаунты» → скачать архив (TData)\n"
         "   • Или нажать «QR» → отправить QR-код покупателю\n\n"
@@ -406,7 +435,6 @@ async def back_to_menu(query, context):
 
 
 def main():
-    # Загружаем прокси один раз при старте
     print("🌐 Загрузка прокси...")
     farm.load_proxies()
     
