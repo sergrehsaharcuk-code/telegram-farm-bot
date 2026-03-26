@@ -18,8 +18,6 @@ class TigerSMS:
         self.api_key = api_key
         self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.active_numbers = {}
-        self.country_names_cache = None
-        self.last_cache_time = None
     
     def _request(self, params):
         params['api_key'] = self.api_key
@@ -32,27 +30,6 @@ class TigerSMS:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
-    def get_country_name_by_id(self, country_id):
-        """Получает название страны по ID через pycountry"""
-        try:
-            # Пробуем найти страну по цифровому коду ISO
-            country_id_int = int(country_id)
-            country = pycountry.countries.get(numeric=country_id_int)
-            if country:
-                return country.name
-        except:
-            pass
-        
-        # Если не нашли по цифровому коду, пробуем по ID как по коду
-        try:
-            country = pycountry.countries.get(alpha_2=country_id)
-            if country:
-                return country.name
-        except:
-            pass
-        
-        return f"Страна {country_id}"
-    
     def get_balance(self):
         result = self._request({'action': 'getBalance'})
         if result and result.startswith('ACCESS_BALANCE'):
@@ -63,7 +40,8 @@ class TigerSMS:
         return None
     
     def get_prices(self):
-        """Получает реальные цены с автоматическими названиями стран"""
+        """Получает цены с автоматическим определением названий стран"""
+        # Получаем цены
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
@@ -83,7 +61,7 @@ class TigerSMS:
                         cost = tg_info.get('cost', 0)
                     
                     # Получаем название страны через pycountry
-                    name = self.get_country_name_by_id(country_id)
+                    name = self._get_country_name(country_id)
                     
                     prices.append({
                         'id': country_id,
@@ -98,6 +76,35 @@ class TigerSMS:
         except Exception as e:
             print(f"❌ Ошибка обработки цен: {e}")
             return None
+    
+    def _get_country_name(self, country_id):
+        """Автоматически определяет название страны по ID"""
+        try:
+            # Пробуем как цифровой код ISO 3166-1 numeric (с 3 цифрами)
+            country_id_padded = str(country_id).zfill(3)
+            country = pycountry.countries.get(numeric=country_id_padded)
+            if country:
+                return country.name
+        except:
+            pass
+        
+        try:
+            # Пробуем как двухбуквенный код ISO 3166-1 alpha-2
+            country = pycountry.countries.get(alpha_2=str(country_id))
+            if country:
+                return country.name
+        except:
+            pass
+        
+        try:
+            # Пробуем как трехбуквенный код ISO 3166-1 alpha-3
+            country = pycountry.countries.get(alpha_3=str(country_id))
+            if country:
+                return country.name
+        except:
+            pass
+        
+        return f"Страна {country_id}"
     
     def get_number(self, service="tg", country="any", operator=None):
         params = {
