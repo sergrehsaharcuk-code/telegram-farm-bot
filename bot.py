@@ -86,9 +86,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "auto_farm":
         await show_countries(query, context)
+    elif data.startswith("country_"):
+        country_id = data.replace("country_", "")
+        await show_operators(query, context, country_id)
     elif data.startswith("buy_"):
-        country = data.replace("buy_", "")
-        await buy_number(query, context, country)
+        parts = data.replace("buy_", "").split("_")
+        country_id = parts[0]
+        operator = "_".join(parts[1:]) if len(parts) > 1 else None
+        await buy_number(query, context, country_id, operator)
     elif data == "my_accounts":
         await show_my_accounts(query, context)
     elif data == "export_all":
@@ -111,26 +116,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_countries(query, context):
-    """Показывает список стран с реальными ценами"""
-    await query.edit_message_text("⏳ Загружаю цены...")
+    """Показывает список стран с ценами"""
+    await query.edit_message_text("⏳ Загружаю страны и цены...")
     
     prices = farm.tiger_sms.get_prices()
     if not prices:
         await query.edit_message_text("❌ Не удалось загрузить цены")
         return
     
-    # prices теперь список, не словарь
+    # Группируем по странам и показываем минимальную цену
+    countries_min = {}
+    for item in prices:
+        cid = item['id']
+        if cid not in countries_min or item['price'] < countries_min[cid]['price']:
+            countries_min[cid] = {
+                'name': item['name'],
+                'price': item['price']
+            }
+    
+    # Сортируем по цене
+    sorted_countries = sorted(countries_min.items(), key=lambda x: x[1]['price'])
+    
     keyboard = []
-    for item in prices[:20]:  # показываем 20 стран
-        # Показываем название страны, если есть, иначе ID
-        if item.get('name'):
-            display_name = item['name']
-        else:
-            display_name = f"Страна {item['id']}"
-        
-        display = f"📱 {display_name} - {item['price']:.2f} руб"
-        callback = f"buy_{item['code']}" if item.get('code') else f"buy_{item['id']}"
-        keyboard.append([InlineKeyboardButton(display, callback_data=callback)])
+    for cid, data in sorted_countries[:25]:
+        display = f"📱 {data['name']} - от {data['price']:.2f} руб"
+        keyboard.append([InlineKeyboardButton(display, callback_data=f"country_{cid}")])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
@@ -138,37 +148,53 @@ async def show_countries(query, context):
     balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
     
     await query.edit_message_text(
-        f"💸 *Выбери страну для номера:*\n\n{balance_text}",
+        f"💸 *Выбери страну:*\n\n{balance_text}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
 
 
-async def buy_number(query, context, country):
-    """Покупает номер в выбранной стране"""
+async def show_operators(query, context, country_id):
+    """Показывает список операторов для выбранной страны"""
+    prices = farm.tiger_sms.get_prices()
+    if not prices:
+        await query.edit_message_text("❌ Данные о ценах не найдены")
+        return
     
-    # Проверяем баланс
+    # Фильтруем по стране
+    country_operators = [p for p in prices if p['id'] == country_id]
+    if not country_operators:
+        await query.edit_message_text("❌ Нет доступных вариантов для этой страны")
+        return
+    
+    country_name = country_operators[0]['name']
+    
+    keyboard = []
+    for op in sorted(country_operators, key=lambda x: x['price']):
+        display = f"💰 {op['price']:.2f} руб - {op['operator']} (доступно: {op['count']})"
+        callback = f"buy_{country_id}_{op['operator']}"
+        keyboard.append([InlineKeyboardButton(display, callback_data=callback)])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад к странам", callback_data="auto_farm")])
+    
     balance = farm.tiger_sms.get_balance()
-    if balance is None:
-        await query.edit_message_text("❌ Не удалось подключиться к Tiger SMS")
-        return
+    balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
     
-    if balance < 5:
-        await query.edit_message_text(
-            f"❌ *Недостаточно средств!*\n\n"
-            f"💰 Баланс: *{balance:.2f} руб*\n"
-            f"📱 Номер стоит ~5 руб\n\n"
-            f"Пополни баланс на Tiger SMS и попробуй снова.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="auto_farm")
-            ]]),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
+    await query.edit_message_text(
+        f"📱 *{country_name}*\n\n"
+        f"💸 *Выбери вариант:*\n\n{balance_text}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def buy_number(query, context, country_id, operator):
+    """Покупает номер"""
     await query.edit_message_text(f"🤖 Покупаю номер...\n\n⏳ Жди, это может занять минуту.")
     
-    success, message, account_data = await farm.auto_register_country(query.from_user.id, country)
+    success, message, account_data = await farm.buy_number_with_operator(
+        query.from_user.id, country_id, operator
+    )
     
     if success:
         await query.message.reply_text(f"✅ {message}\n\n📱 Номер: {account_data['phone']}")
@@ -423,6 +449,7 @@ async def show_help(query, context):
         "1️⃣ *Автоферма*\n"
         "   • Нажми «АВТОФЕРМА»\n"
         "   • Выбери страну\n"
+        "   • Выбери вариант цены (оператора)\n"
         "   • Бот сам купит номер и зарегистрирует аккаунт\n\n"
         "2️⃣ *Ручная регистрация*\n"
         "   • Нажми «Регистрация»\n"
