@@ -39,25 +39,50 @@ class TigerSMS:
         return None
     
     def get_prices(self):
-        """Получает цены на номера для Telegram"""
+        """Получает реальные цены на номера для Telegram"""
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
+        
+        # Выводим сырой ответ в логи для отладки
+        print(f"===== RAW PRICES RESPONSE =====")
+        print(result)
+        print(f"================================")
         
         # Пробуем распарсить JSON
         try:
             data = json.loads(result)
             prices = {}
-            for country, info in data.items():
-                if isinstance(info, dict):
-                    cost = info.get('cost', 0)
-                    # Если цена в копейках, делим на 100
-                    if cost > 100:
-                        cost = cost / 100
-                    prices[country] = cost
-            return prices
-        except:
-            # Если не JSON, пробуем другой формат
+            
+            # Формат 1: {"ru": {"cost": 500}, "ua": {"cost": 450}, ...}
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    # Если ключ — двухбуквенный код страны
+                    if len(key) == 2 and isinstance(value, dict):
+                        if 'cost' in value:
+                            prices[key] = value['cost'] / 100
+                        elif 'price' in value:
+                            prices[key] = value['price'] / 100
+                    # Если значение — число
+                    elif isinstance(value, (int, float)) and len(key) == 2:
+                        prices[key] = value / 100
+            
+            # Формат 2: {"1": {"country": "ru", "cost": 500}, ...}
+            if not prices:
+                for key, value in data.items():
+                    if isinstance(value, dict) and 'country' in value and 'cost' in value:
+                        country_code = value['country'].lower()
+                        prices[country_code] = value['cost'] / 100
+            
+            if prices:
+                print(f"✅ Получены цены: {prices}")
+                return prices
+            else:
+                print("⚠️ Не удалось распарсить цены")
+                return None
+                
+        except json.JSONDecodeError as e:
+            print(f"❌ Ошибка парсинга JSON: {e}")
             return None
     
     def get_number(self, service="tg", country="any"):
