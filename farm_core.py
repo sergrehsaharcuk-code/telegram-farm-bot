@@ -5,7 +5,6 @@ import shutil
 import requests
 import socks
 import asyncio
-import re
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
@@ -18,100 +17,49 @@ class TigerSMS:
         self.api_key = api_key
         self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.active_numbers = {}
-        self.countries_cache = None
+        self.country_names_cache = None
     
     def _request(self, params):
         params['api_key'] = self.api_key
         try:
             response = requests.get(self.api_url, params=params, timeout=30)
             result = response.text.strip()
-            print(f"Tiger SMS API: {result[:200]}")
+            print(f"Tiger SMS: {result[:200]}")
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
-    def get_prices_from_site(self):
-        """Парсит сайт Tiger SMS и получает страны с ценами для Telegram"""
-        url = "https://tiger-sms.com/ru"
+    def get_country_names(self):
+        """Получает реальные названия стран через API"""
+        if self.country_names_cache:
+            return self.country_names_cache
         
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code != 200:
-                print(f"Ошибка загрузки сайта: {response.status_code}")
-                return None
-            
-            html = response.text
-            
-            # Ищем блок Telegram в списке сервисов
-            # На сайте есть кнопка "Показать все", но мы ищем сразу
-            patterns = [
-                # Вариант 1: блок с сервисом Telegram
-                r'<div[^>]*class="[^"]*service[^"]*"[^>]*>.*?Telegram.*?</div>.*?<div[^>]*class="[^"]*countries[^"]*"[^>]*>(.*?)</div>',
-                # Вариант 2: таблица с ценами
-                r'Telegram.*?<div[^>]*class="[^"]*prices[^"]*"[^>]*>(.*?)</div>',
-                # Вариант 3: список стран для Telegram
-                r'<div[^>]*data-service="tg"[^>]*>(.*?)</div>',
-            ]
-            
-            countries_html = None
-            for pattern in patterns:
-                match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
-                if match:
-                    countries_html = match.group(1)
-                    break
-            
-            if not countries_html:
-                # Ищем более простой вариант: список стран в тексте
-                # Часто на сайте есть скрытые данные
-                script_pattern = r'<script[^>]*>.*?var\s+prices\s*=\s*({.*?});.*?</script>'
-                script_match = re.search(script_pattern, html, re.DOTALL)
-                if script_match:
-                    import json
-                    try:
-                        data = json.loads(script_match.group(1))
-                        if 'tg' in data:
-                            prices = []
-                            for country_id, info in data['tg'].items():
-                                prices.append({
-                                    'name': info.get('name', f"Страна {country_id}"),
-                                    'price': info.get('price', 0)
-                                })
-                            if prices:
-                                return prices
-                    except:
-                        pass
-            
-            if countries_html:
-                # Парсим страны и цены
-                country_pattern = r'<div[^>]*class="[^"]*country[^"]*"[^>]*>.*?<span[^>]*class="[^"]*name[^"]*"[^>]*>([^<]+)</span>.*?<span[^>]*class="[^"]*price[^"]*"[^>]*>([\d\.]+)[^<]*</span>'
-                matches = re.findall(country_pattern, countries_html, re.DOTALL)
-                
-                if matches:
-                    prices = []
-                    for country, price in matches:
-                        country = country.strip()
-                        price = float(price)
-                        prices.append({
-                            'name': country,
-                            'price': price
-                        })
-                    print(f"✅ Спарсено {len(prices)} стран для Telegram")
-                    return prices
-            
-            # Если парсинг не удался, используем API
-            print("⚠️ Парсинг не удался, использую API")
-            return self.get_prices_from_api()
-                
-        except Exception as e:
-            print(f"Ошибка парсинга: {e}")
-            return self.get_prices_from_api()
+        result = self._request({'action': 'getCountries'})
+        if result:
+            try:
+                data = json.loads(result)
+                self.country_names_cache = data
+                print(f"✅ Загружены названия {len(data)} стран")
+                return data
+            except:
+                print("❌ Не удалось получить названия стран через API")
+        return {}
     
-    def get_prices_from_api(self):
-        """Запасной вариант: получаем цены из API"""
+    def get_balance(self):
+        result = self._request({'action': 'getBalance'})
+        if result and result.startswith('ACCESS_BALANCE'):
+            try:
+                return float(result.split(':')[1])
+            except:
+                return None
+        return None
+    
+    def get_prices(self):
+        """Получает реальные цены с названиями стран"""
+        # Получаем названия стран
+        names = self.get_country_names()
+        
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
@@ -124,45 +72,33 @@ class TigerSMS:
                 if 'tg' in services:
                     tg_data = services['tg']
                     
-                    if isinstance(tg_data, list):
-                        for op in tg_data:
-                            price = float(op.get('cost', 0))
-                            prices.append({
-                                'name': f"Страна {country_id}",
-                                'price': price
-                            })
-                    else:
+                    # Цена может быть в поле cost
+                    if isinstance(tg_data, dict):
                         price = float(tg_data.get('cost', 0))
-                        prices.append({
-                            'name': f"Страна {country_id}",
-                            'price': price
-                        })
+                    elif isinstance(tg_data, list):
+                        # Берём минимальную цену
+                        price = min([float(op.get('cost', 0)) for op in tg_data if 'cost' in op])
+                    else:
+                        price = 0
+                    
+                    # Получаем название страны
+                    country_name = names.get(str(country_id), f"Страна {country_id}")
+                    
+                    prices.append({
+                        'id': country_id,
+                        'name': country_name,
+                        'price': price
+                    })
             
-            # Убираем дубликаты стран, оставляем минимальную цену
-            unique_countries = {}
-            for item in prices:
-                cid = item['name']
-                if cid not in unique_countries or item['price'] < unique_countries[cid]['price']:
-                    unique_countries[cid] = item
-            
-            prices = list(unique_countries.values())
+            # Сортируем по цене
             prices.sort(key=lambda x: x['price'])
             
-            print(f"✅ Получены цены для {len(prices)} стран из API")
+            print(f"✅ Получены цены для {len(prices)} стран")
             return prices
                 
         except json.JSONDecodeError as e:
             print(f"❌ Ошибка парсинга JSON: {e}")
             return None
-    
-    def get_balance(self):
-        result = self._request({'action': 'getBalance'})
-        if result and result.startswith('ACCESS_BALANCE'):
-            try:
-                return float(result.split(':')[1])
-            except:
-                return None
-        return None
     
     def get_number(self, service="tg", country="any", operator=None):
         params = {
@@ -281,33 +217,13 @@ class TelegramFarm:
     def load_proxies(self):
         return self.proxy_manager.load_proxies()
 
-    async def buy_multiple_numbers(self, user_id, country_name, count):
-        """Покупает указанное количество номеров в выбранной стране"""
-        results = []
+    async def buy_number_by_country_id(self, user_id, country_id):
+        """Покупает номер в указанной стране по ID"""
+        print(f"📱 Покупаю номер в стране {country_id}...")
         
-        for i in range(count):
-            print(f"📱 Покупаю номер {i+1}/{count}...")
-            
-            success, message, account_data = await self.buy_number_with_country_name(user_id, country_name)
-            
-            if success:
-                results.append(account_data)
-                print(f"✅ Номер {i+1} куплен: {account_data['phone']}")
-            else:
-                print(f"❌ Ошибка при покупке {i+1}: {message}")
-            
-            # Небольшая задержка между покупками
-            await asyncio.sleep(5)
-        
-        return results
-
-    async def buy_number_with_country_name(self, user_id, country_name):
-        """Покупает номер в стране по её названию"""
-        # Получаем ID страны по названию (нужно через API или парсинг)
-        # Пока используем any, так как точное соответствие сложно
-        number_id, phone = self.tiger_sms.get_number(service="tg", country="any")
+        number_id, phone = self.tiger_sms.get_number(service="tg", country=country_id)
         if not phone:
-            return False, f"Не удалось купить номер в {country_name}.", None
+            return False, f"Не удалось купить номер в стране {country_id}. Попробуй другую.", None
         
         print(f"✅ Номер куплен: {phone}")
         
