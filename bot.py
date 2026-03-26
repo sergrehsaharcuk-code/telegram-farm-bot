@@ -85,9 +85,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = WAITING_PHONE
         
     elif data == "auto_farm":
-        await show_countries(query, context)
-    elif data.startswith("buy_"):
-        country_id = data.replace("buy_", "")
+        await auto_farm(query, context)
+    elif data.startswith("buy_country_"):
+        country_id = data.replace("buy_country_", "")
         await buy_number(query, context, country_id)
     elif data == "my_accounts":
         await show_my_accounts(query, context)
@@ -110,19 +110,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cancel_registration(query, context, phone)
 
 
-async def show_countries(query, context):
+async def auto_farm(query, context):
     """Показывает список стран с ценами"""
-    await query.edit_message_text("⏳ Загружаю страны и цены...")
+    await query.edit_message_text("🌍 Загружаю актуальные страны и цены...")
     
     prices = farm.tiger_sms.get_prices()
-    if not prices:
-        await query.edit_message_text("❌ Не удалось загрузить цены")
-        return
     
+    if not prices:
+        await query.edit_message_text("❌ Ошибка связи с Tiger SMS. Проверьте баланс и API ключ.")
+        return
+
     keyboard = []
-    for item in prices[:20]:  # показываем 20 стран
-        display = f"📱 {item['name']} - {item['price']:.2f} руб"
-        keyboard.append([InlineKeyboardButton(display, callback_data=f"buy_{item['id']}")])
+    for item in prices[:12]:  # Показываем 12 самых дешёвых
+        keyboard.append([
+            InlineKeyboardButton(
+                f"✅ {item['name']} — {item['price']:.2f} ₽", 
+                callback_data=f"buy_country_{item['id']}"
+            )
+        ])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
@@ -130,7 +135,7 @@ async def show_countries(query, context):
     balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
     
     await query.edit_message_text(
-        f"💸 *Выбери страну:*\n\n{balance_text}",
+        f"💰 **Выберите страну для регистрации:**\n\n{balance_text}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
