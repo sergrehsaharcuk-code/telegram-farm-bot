@@ -29,7 +29,28 @@ class TigerSMS:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
-    def get_number(self, service="tg", country="ru"):
+    def get_balance(self):
+        """Получает баланс"""
+        result = self._request({'action': 'getBalance'})
+        if result and result.startswith('ACCESS_BALANCE'):
+            try:
+                return float(result.split(':')[1])
+            except:
+                return None
+        return None
+    
+    def get_prices(self):
+        """Получает цены на номера для Telegram"""
+        result = self._request({'action': 'getPrices', 'service': 'tg'})
+        if result:
+            try:
+                import json
+                return json.loads(result)
+            except:
+                return None
+        return None
+    
+    def get_number(self, service="tg", country="any"):
         result = self._request({
             'action': 'getNumber',
             'service': service,
@@ -61,11 +82,10 @@ class ProxyManager:
     def __init__(self):
         self.proxies = []
         self.used_proxies = {}
-        self.max_uses_per_day = 2  # 2 аккаунта на прокси в день
+        self.max_uses_per_day = 2
         self.current_index = 0
 
     def load_proxies(self):
-        """Загружает рабочие SOCKS5 прокси"""
         url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
         
         try:
@@ -143,13 +163,15 @@ class TelegramFarm:
     def load_proxies(self):
         return self.proxy_manager.load_proxies()
 
-    async def auto_register(self, user_id):
-        print("📱 Покупаю номер...")
-        number_id, phone = self.tiger_sms.get_number()
-        if not phone:
-            return False, "Не удалось купить номер. Проверь баланс на Tiger SMS.", None
+    async def auto_register_country(self, user_id, country):
+        """Автоматическая регистрация в выбранной стране"""
+        print(f"📱 Покупаю номер в {country}...")
         
-        print(f"✅ Номер: {phone}")
+        number_id, phone = self.tiger_sms.get_number(service="tg", country=country)
+        if not phone:
+            return False, f"Не удалось купить номер в {country}. Попробуй другую страну.", None
+        
+        print(f"✅ Номер куплен: {phone}")
         
         success, msg = await self.start_registration(phone, user_id)
         if not success:
@@ -160,7 +182,7 @@ class TelegramFarm:
         code = await self.tiger_sms.get_code(number_id)
         if not code:
             self.tiger_sms.cancel_number(number_id)
-            return False, "Код не пришёл", None
+            return False, "Код не пришёл за 2 минуты", None
         
         print(f"📨 Код: {code}")
         
@@ -178,9 +200,9 @@ class TelegramFarm:
         session_path = os.path.join(self.sessions_dir, session_name)
 
         if not proxy:
-            return False, "Нет рабочих прокси"
+            return False, "Нет рабочих прокси. Попробуй позже."
 
-        print(f"🔌 Прокси: {proxy[1]}:{proxy[2]}")
+        print(f"🔌 Используем прокси: {proxy[1]}:{proxy[2]}")
         client = TelegramClient(session_path, self.api_id, self.api_hash, proxy=proxy)
 
         try:
@@ -193,11 +215,11 @@ class TelegramFarm:
             return True, f"Код отправлен на {phone}"
         except Exception as e:
             await client.disconnect()
-            return False, str(e)
+            return False, f"Ошибка: {str(e)}"
 
     async def complete_registration(self, phone, code):
         if phone not in self.pending_registrations:
-            return False, "Нет регистрации", None
+            return False, "Нет ожидающей регистрации", None
 
         data = self.pending_registrations[phone]
         client = data['client']
@@ -208,7 +230,7 @@ class TelegramFarm:
             me = await client.get_me()
             session_string = client.session.save()
             if not session_string:
-                return False, "Нет session_string", None
+                return False, "Не удалось получить session_string", None
             if proxy:
                 self.proxy_manager.mark_used(proxy)
             await client.disconnect()
@@ -241,11 +263,11 @@ class TelegramFarm:
                     for file in files:
                         zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), self.accounts_dir))
 
-            return True, f"✅ Аккаунт {phone} готов", info
+            return True, f"✅ Аккаунт {phone} готов!", info
         except PhoneCodeInvalidError:
             return False, "Неверный код", None
         except Exception as e:
-            return False, str(e), None
+            return False, f"Ошибка: {str(e)}", None
 
     def get_accounts_list(self):
         accounts = []
