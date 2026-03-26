@@ -111,7 +111,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_countries(query, context):
-    """Показывает список стран с ценами"""
+    """Показывает список стран с ценами (без проверки баланса)"""
     await query.edit_message_text("⏳ Загружаю цены...")
     
     prices = farm.tiger_sms.get_prices()
@@ -137,8 +137,9 @@ async def show_countries(query, context):
 
 
 async def buy_number(query, context, country):
-    """Покупает номер в выбранной стране (с проверкой баланса)"""
-    # Проверяем баланс
+    """Покупает номер (проверка баланса после выбора страны)"""
+    
+    # Проверяем баланс ТОЛЬКО после выбора страны
     balance = farm.tiger_sms.get_balance()
     if balance is None:
         await query.edit_message_text("❌ Не удалось подключиться к Tiger SMS")
@@ -149,7 +150,11 @@ async def buy_number(query, context, country):
             f"❌ *Недостаточно средств!*\n\n"
             f"💰 Баланс: *{balance:.2f} руб*\n"
             f"📱 Номер в *{country.upper()}* стоит ~5 руб\n\n"
-            f"Пополни баланс на Tiger SMS и попробуй снова.",
+            f"Пополни баланс на Tiger SMS и попробуй снова.\n\n"
+            f"🔙 Нажми «Назад» и выбери другую страну.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 Назад", callback_data="auto_farm")
+            ]]),
             parse_mode=ParseMode.MARKDOWN
         )
         return
