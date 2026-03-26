@@ -60,24 +60,31 @@ class TigerSMS:
         if not result:
             return None
         
+        print(f"===== RAW PRICES RESPONSE =====")
+        print(result[:500])
+        print(f"================================")
+        
         try:
             data = json.loads(result)
             countries = self.get_countries()
             prices = {}
             
-            # Формат: {"0": {"tg": {"cost": "170.00", "count": 72}}, ...}
+            # Формат: {"0": {"tg": {"cost": "170.00", "count": 89}}, ...}
             for country_id, services in data.items():
                 if 'tg' in services:
                     cost_str = services['tg']['cost']
                     price = float(cost_str) / 100  # из копеек в рубли
                     
-                    # Получаем код страны из словаря стран
+                    # Получаем код страны
                     if country_id in countries:
                         country_info = countries[country_id]
                         if isinstance(country_info, dict) and 'country' in country_info:
                             country_code = country_info['country'].lower()
                             if len(country_code) == 2:
                                 prices[country_code] = price
+                    else:
+                        # Если нет в словаре стран, используем ID
+                        prices[f"id_{country_id}"] = price
             
             if prices:
                 print(f"✅ Получены цены для {len(prices)} стран")
