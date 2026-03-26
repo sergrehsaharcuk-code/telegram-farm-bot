@@ -116,21 +116,21 @@ async def show_countries(query, context):
     
     prices = farm.tiger_sms.get_prices()
     if not prices:
-        await query.edit_message_text(
-            "❌ Не удалось загрузить цены.\n\n"
-            "Проверь подключение к Tiger SMS.\n"
-            "Баланс: " + str(farm.tiger_sms.get_balance()) + " руб"
-        )
+        await query.edit_message_text("❌ Не удалось загрузить цены")
         return
     
+    # prices теперь список, не словарь
     keyboard = []
-    # Сортируем страны по цене
-    sorted_countries = sorted(prices.items(), key=lambda x: x[1])
-    for country, price in sorted_countries[:20]:  # показываем 20 стран
-        keyboard.append([InlineKeyboardButton(
-            f"📱 {country.upper()} - {price:.2f} руб", 
-            callback_data=f"buy_{country}"
-        )])
+    for item in prices[:20]:  # показываем 20 стран
+        # Показываем название страны, если есть, иначе ID
+        if item.get('name'):
+            display_name = item['name']
+        else:
+            display_name = f"Страна {item['id']}"
+        
+        display = f"📱 {display_name} - {item['price']:.2f} руб"
+        callback = f"buy_{item['code']}" if item.get('code') else f"buy_{item['id']}"
+        keyboard.append([InlineKeyboardButton(display, callback_data=callback)])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
@@ -138,8 +138,7 @@ async def show_countries(query, context):
     balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
     
     await query.edit_message_text(
-        f"💸 *Выбери страну для номера:*\n\n"
-        f"{balance_text}",
+        f"💸 *Выбери страну для номера:*\n\n{balance_text}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
@@ -158,9 +157,8 @@ async def buy_number(query, context, country):
         await query.edit_message_text(
             f"❌ *Недостаточно средств!*\n\n"
             f"💰 Баланс: *{balance:.2f} руб*\n"
-            f"📱 Номер в *{country.upper()}* стоит ~5 руб\n\n"
-            f"Пополни баланс на Tiger SMS и попробуй снова.\n\n"
-            f"🔙 Нажми «Назад» и выбери другую страну.",
+            f"📱 Номер стоит ~5 руб\n\n"
+            f"Пополни баланс на Tiger SMS и попробуй снова.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Назад", callback_data="auto_farm")
             ]]),
@@ -168,7 +166,7 @@ async def buy_number(query, context, country):
         )
         return
     
-    await query.edit_message_text(f"🤖 Покупаю номер в {country.upper()}...\n\n⏳ Жди, это может занять минуту.")
+    await query.edit_message_text(f"🤖 Покупаю номер...\n\n⏳ Жди, это может занять минуту.")
     
     success, message, account_data = await farm.auto_register_country(query.from_user.id, country)
     
