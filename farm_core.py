@@ -46,13 +46,23 @@ class TigerSMS:
                 countries = {}
                 for country_id, info in data.items():
                     if isinstance(info, dict):
-                        # Пробуем получить название
-                        name = info.get('name_ru') or info.get('name') or info.get('country') or info.get('title')
+                        # Ищем название в разных полях
+                        name = None
+                        for key in ['name_ru', 'name', 'country', 'title', 'ru_name', 'rus_name']:
+                            if key in info and info[key]:
+                                name = info[key]
+                                break
                         if name:
                             countries[country_id] = name
+                        else:
+                            # Если название не найдено, оставляем как есть
+                            countries[country_id] = f"Страна {country_id}"
                 if countries:
                     self.countries_cache = countries
                     print(f"✅ Загружены страны: {len(countries)}")
+                    # Выводим первые 10 для проверки
+                    for cid, name in list(countries.items())[:10]:
+                        print(f"  {cid} -> {name}")
                     return countries
             except Exception as e:
                 print(f"Ошибка парсинга стран: {e}")
@@ -72,6 +82,7 @@ class TigerSMS:
     def get_prices(self):
         """Получает реальные цены на номера для Telegram"""
         countries = self.get_countries()
+        print(f"Стран в словаре: {len(countries)}")
         
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
@@ -85,13 +96,13 @@ class TigerSMS:
                 if 'tg' in services:
                     tg_data = services['tg']
                     
-                    # Может быть список операторов или один объект
                     if isinstance(tg_data, list):
                         for op in tg_data:
                             price = float(op.get('cost', 0))
                             operator = op.get('operator', 'Стандартный')
                             count = op.get('count', 0)
                             
+                            # Получаем название страны
                             country_name = countries.get(country_id, f"Страна {country_id}")
                             
                             prices.append({
@@ -116,9 +127,7 @@ class TigerSMS:
                             'count': count
                         })
             
-            # Сортируем по цене
             prices.sort(key=lambda x: x['price'])
-            
             print(f"✅ Получены цены для {len(prices)} вариантов")
             return prices
                 
@@ -127,7 +136,6 @@ class TigerSMS:
             return None
     
     def get_number(self, service="tg", country="any", operator=None):
-        """Покупает номер с возможностью выбора оператора"""
         params = {
             'action': 'getNumber',
             'service': service,
@@ -245,8 +253,7 @@ class TelegramFarm:
         return self.proxy_manager.load_proxies()
 
     async def buy_number_with_operator(self, user_id, country_id, operator):
-        """Покупает номер с конкретным оператором"""
-        print(f"📱 Покупаю номер в стране {country_id}...")
+        print(f"📱 Покупаю номер...")
         
         number_id, phone = self.tiger_sms.get_number(service="tg", country=country_id, operator=operator)
         if not phone:
