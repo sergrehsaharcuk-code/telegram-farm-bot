@@ -13,7 +13,7 @@ from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
 
 
 class TigerSMS:
-    """Класс для работы с API Tiger SMS"""
+    """Класс для работы с API Tiger SMS (асинхронный)"""
     
     def __init__(self, api_key):
         self.api_key = api_key
@@ -21,10 +21,13 @@ class TigerSMS:
         self.active_numbers = {}
     
     def _request(self, params):
+        """Синхронный запрос"""
         params['api_key'] = self.api_key
         try:
             response = requests.get(self.api_url, params=params, timeout=30)
-            return response.text.strip()
+            result = response.text.strip()
+            print(f"Tiger SMS ответ: {result}")
+            return result
         except Exception as e:
             print(f"Ошибка запроса к Tiger SMS: {e}")
             return None
@@ -46,12 +49,11 @@ class TigerSMS:
                 return phone, number_id
         return None, None
     
-    def get_code(self, number_id, timeout=120):
-        """Ждёт код SMS"""
-        import time
-        start_time = time.time()
+    async def get_code(self, number_id, timeout=120):
+        """Асинхронное ожидание кода (не блокирует бота)"""
+        start_time = asyncio.get_event_loop().time()
         
-        while time.time() - start_time < timeout:
+        while asyncio.get_event_loop().time() - start_time < timeout:
             result = self._request({
                 'action': 'getStatus',
                 'id': number_id
@@ -61,10 +63,10 @@ class TigerSMS:
                 code = result.split(':')[1]
                 return code
             elif result and result.startswith('STATUS_WAIT_CODE'):
-                time.sleep(5)
+                await asyncio.sleep(5)
                 continue
             else:
-                time.sleep(5)
+                await asyncio.sleep(5)
         
         return None
     
@@ -85,6 +87,7 @@ class ProxyManager:
         self.current_index = 0
 
     def load_proxies(self):
+        """Загружает прокси — проверяем 50 штук"""
         url = "https://advanced.name/freeproxy?protocol=socks5&type=all"
         
         try:
@@ -102,6 +105,7 @@ class ProxyManager:
             
             unique_proxies = list(set(raw_proxies))
             
+            # Проверяем 50 прокси
             self.proxies = []
             for p_str in unique_proxies[:50]:
                 parsed = self._parse_proxy(p_str)
@@ -198,7 +202,7 @@ class TelegramFarm:
             return False, f"Ошибка при отправке кода: {message}", None
         
         print("⏳ Жду код...")
-        code = self.tiger_sms.get_code(number_id, timeout=120)
+        code = await self.tiger_sms.get_code(number_id, timeout=120)
         
         if not code:
             self.tiger_sms.cancel_number(number_id)
