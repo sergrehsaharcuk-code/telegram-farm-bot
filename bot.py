@@ -116,7 +116,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_countries(query, context):
-    """Показывает список стран с ценами"""
+    """Показывает список стран с минимальной ценой"""
     await query.edit_message_text("⏳ Загружаю страны и цены...")
     
     prices = farm.tiger_sms.get_prices()
@@ -124,13 +124,14 @@ async def show_countries(query, context):
         await query.edit_message_text("❌ Не удалось загрузить цены")
         return
     
-    # Группируем по странам и показываем минимальную цену
+    # Группируем по странам, показываем минимальную цену
     countries_min = {}
     for item in prices:
         cid = item['id']
+        name = item['name']
         if cid not in countries_min or item['price'] < countries_min[cid]['price']:
             countries_min[cid] = {
-                'name': item['name'],
+                'name': name,
                 'price': item['price']
             }
     
