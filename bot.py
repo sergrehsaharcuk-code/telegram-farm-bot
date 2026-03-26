@@ -111,7 +111,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_countries(query, context):
-    """Показывает список стран с ценами (без проверки баланса)"""
+    """Показывает список стран с ценами"""
     await query.edit_message_text("⏳ Загружаю цены...")
     
     prices = farm.tiger_sms.get_prices()
@@ -137,9 +137,9 @@ async def show_countries(query, context):
 
 
 async def buy_number(query, context, country):
-    """Покупает номер (проверка баланса после выбора страны)"""
+    """Покупает номер в выбранной стране"""
     
-    # Проверяем баланс ТОЛЬКО после выбора страны
+    # Проверяем баланс
     balance = farm.tiger_sms.get_balance()
     if balance is None:
         await query.edit_message_text("❌ Не удалось подключиться к Tiger SMS")
