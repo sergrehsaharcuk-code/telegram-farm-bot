@@ -5,6 +5,7 @@ import shutil
 import requests
 import socks
 import asyncio
+import pycountry
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
@@ -31,31 +32,26 @@ class TigerSMS:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
-    def get_actual_country_names(self):
-        """Автоматически тянет список соответствий ID -> Название с API"""
-        # Кэшируем на 1 час
-        if self.country_names_cache and self.last_cache_time:
-            if datetime.now() - self.last_cache_time < timedelta(hours=1):
-                return self.country_names_cache
-        
-        result = self._request({'action': 'getCountries'})
-        print(f"===== GET COUNTRIES RESPONSE =====")
-        print(result)
-        print(f"==================================")
-        
+    def get_country_name_by_id(self, country_id):
+        """Получает название страны по ID через pycountry"""
         try:
-            data = json.loads(result)
-            if isinstance(data, dict):
-                self.country_names_cache = data
-                self.last_cache_time = datetime.now()
-                print(f"✅ Успешно загружено {len(data)} названий стран")
-                return data
-            else:
-                print("⚠️ API вернул неожиданный формат")
-                return {}
-        except Exception as e:
-            print(f"⚠️ Ошибка авто-получения названий: {e}")
-            return {}
+            # Пробуем найти страну по цифровому коду ISO
+            country_id_int = int(country_id)
+            country = pycountry.countries.get(numeric=country_id_int)
+            if country:
+                return country.name
+        except:
+            pass
+        
+        # Если не нашли по цифровому коду, пробуем по ID как по коду
+        try:
+            country = pycountry.countries.get(alpha_2=country_id)
+            if country:
+                return country.name
+        except:
+            pass
+        
+        return f"Страна {country_id}"
     
     def get_balance(self):
         result = self._request({'action': 'getBalance'})
@@ -67,11 +63,7 @@ class TigerSMS:
         return None
     
     def get_prices(self):
-        """Метод без ручных словарей: всё тянем из API в реальном времени"""
-        # 1. Сначала дергаем актуальные имена
-        names_map = self.get_actual_country_names()
-        
-        # 2. Получаем цены
+        """Получает реальные цены с автоматическими названиями стран"""
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
@@ -79,31 +71,32 @@ class TigerSMS:
         try:
             data = json.loads(result)
             prices = []
+            
             for country_id, services in data.items():
                 if 'tg' in services:
-                    c_id_str = str(country_id)
-                    
-                    # Берем имя ТОЛЬКО из ответа API
-                    name = names_map.get(c_id_str, f"Страна {c_id_str}")
-                    
                     tg_info = services['tg']
-                    # Обработка разных форматов ответа (список или объект)
+                    
+                    # Извлекаем цену
                     if isinstance(tg_info, list) and len(tg_info) > 0:
                         cost = tg_info[0].get('cost', 0)
                     else:
                         cost = tg_info.get('cost', 0)
-
+                    
+                    # Получаем название страны через pycountry
+                    name = self.get_country_name_by_id(country_id)
+                    
                     prices.append({
                         'id': country_id,
-                        'name': name, 
+                        'name': name,
                         'price': float(cost)
                     })
             
             prices.sort(key=lambda x: x['price'])
             print(f"✅ Получены цены для {len(prices)} стран")
             return prices
+                
         except Exception as e:
-            print(f"❌ Ошибка парсинга цен: {e}")
+            print(f"❌ Ошибка обработки цен: {e}")
             return None
     
     def get_number(self, service="tg", country="any", operator=None):
