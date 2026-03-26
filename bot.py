@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WAITING_PHONE, WAITING_CODE, WAITING_COUNT = range(3)
+WAITING_PHONE, WAITING_CODE = range(2)
 
 farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
 
@@ -86,9 +86,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "auto_farm":
         await show_countries(query, context)
-    elif data.startswith("select_country_"):
-        country_name = data.replace("select_country_", "")
-        await ask_quantity(query, context, country_name)
+    elif data.startswith("buy_"):
+        country_id = data.replace("buy_", "")
+        await buy_number(query, context, country_id)
     elif data == "my_accounts":
         await show_my_accounts(query, context)
     elif data == "export_all":
@@ -114,18 +114,15 @@ async def show_countries(query, context):
     """Показывает список стран с ценами"""
     await query.edit_message_text("⏳ Загружаю страны и цены...")
     
-    prices = farm.tiger_sms.get_prices_from_site()
+    prices = farm.tiger_sms.get_prices()
     if not prices:
         await query.edit_message_text("❌ Не удалось загрузить цены")
         return
     
-    # Сохраняем в context
-    context.user_data['countries_prices'] = prices
-    
     keyboard = []
-    for item in prices[:20]:
+    for item in prices[:20]:  # показываем 20 стран
         display = f"📱 {item['name']} - {item['price']:.2f} руб"
-        keyboard.append([InlineKeyboardButton(display, callback_data=f"select_country_{item['name']}")])
+        keyboard.append([InlineKeyboardButton(display, callback_data=f"buy_{item['id']}")])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
@@ -139,144 +136,42 @@ async def show_countries(query, context):
     )
 
 
-async def ask_quantity(query, context, country_name):
-    """Запрашивает количество аккаунтов"""
-    context.user_data['selected_country'] = country_name
-    context.user_data['state'] = WAITING_COUNT
-    
-    await query.edit_message_text(
-        f"📱 *Страна: {country_name}*\n\n"
-        f"✏️ *Введи количество аккаунтов:*\n"
-        f"(например, 5, 10, 50)\n\n"
-        f"💡 Минимальная цена: {await get_country_price(context, country_name)} руб",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-async def get_country_price(context, country_name):
-    """Получает цену для выбранной страны"""
-    prices = context.user_data.get('countries_prices', [])
-    for item in prices:
-        if item['name'] == country_name:
-            return item['price']
-    return "?"
-
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
+async def buy_number(query, context, country_id):
+    """Покупает номер в выбранной стране"""
+    # Проверяем баланс
+    balance = farm.tiger_sms.get_balance()
+    if balance is None:
+        await query.edit_message_text("❌ Не удалось подключиться к Tiger SMS")
         return
     
-    text = update.message.text.strip()
-    state = context.user_data.get('state')
-    
-    if state == WAITING_PHONE:
-        phone = clean_phone_number(text)
-        if len(phone) < 10 or len(phone) > 16:
-            await update.message.reply_text("❌ Неверный формат номера!\nПример: +79991234567")
-            return
-        
-        context.user_data['state'] = None
-        await start_registration(update, context, phone)
-        
-    elif state == WAITING_CODE:
-        code = text
-        if not code.isdigit():
-            await update.message.reply_text("❌ Код должен состоять только из цифр")
-            return
-        
-        context.user_data['state'] = None
-        await complete_registration(update, context, code)
-        
-    elif state == WAITING_COUNT:
-        try:
-            count = int(text)
-            if count < 1 or count > 100:
-                await update.message.reply_text("❌ Введи число от 1 до 100")
-                return
-        except ValueError:
-            await update.message.reply_text("❌ Введи целое число")
-            return
-        
-        context.user_data['state'] = None
-        country_name = context.user_data.get('selected_country')
-        
-        await update.message.reply_text(f"🤖 Покупаю {count} аккаунтов в {country_name}...\n\n⏳ Это может занять несколько минут.")
-        
-        results = await farm.buy_multiple_numbers(user_id, country_name, count)
-        
-        if results:
-            await update.message.reply_text(f"✅ Успешно куплено {len(results)} из {count} аккаунтов!")
-            
-            # Отправляем все архивы
-            for account_data in results:
-                zip_file = os.path.join(ACCOUNTS_DIR, f"{account_data['phone'].replace('+', '')}.zip")
-                if os.path.exists(zip_file):
-                    with open(zip_file, 'rb') as f:
-                        await update.message.reply_document(
-                            document=f,
-                            filename=os.path.basename(zip_file),
-                            caption=f"✅ Аккаунт {account_data['phone']} готов!"
-                        )
-        else:
-            await update.message.reply_text(f"❌ Не удалось купить ни одного аккаунта")
-        
-        await back_to_menu_from_message(update, context)
-        
-    else:
-        await update.message.reply_text("Нажми /start для начала работы")
-
-
-async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, phone):
-    if phone in farm.pending_registrations:
-        await update.message.reply_text(f"⏳ Регистрация для {phone} уже идёт")
+    if balance < 5:
+        await query.edit_message_text(
+            f"❌ *Недостаточно средств!*\n\n"
+            f"💰 Баланс: *{balance:.2f} руб*\n\n"
+            f"Пополни баланс на Tiger SMS и попробуй снова.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
-    success, message = await farm.start_registration(phone, update.effective_user.id)
+    await query.edit_message_text(f"🤖 Покупаю номер...\n\n⏳ Жди, это может занять минуту.")
     
-    if not success:
-        await update.message.reply_text(f"❌ {message}")
-        return
-    
-    context.user_data['waiting_code_phone'] = phone
-    context.user_data['state'] = WAITING_CODE
-    
-    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_reg_{phone}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"📨 *{message}*\n\n✏️ Введи код из SMS:",
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, code):
-    phone = context.user_data.get('waiting_code_phone')
-    
-    if not phone:
-        await update.message.reply_text("❌ Нет ожидающей регистрации")
-        return
-    
-    status_msg = await update.message.reply_text("⏳ Проверяю код...")
-    
-    success, message, account_data = await farm.complete_registration(phone, code)
+    success, message, account_data = await farm.buy_number_by_country_id(query.from_user.id, country_id)
     
     if success:
-        await status_msg.edit_text(f"{message}\n\n📱 Номер: {account_data['phone']}")
+        await query.message.reply_text(f"✅ {message}\n\n📱 Номер: {account_data['phone']}")
         
         zip_file = os.path.join(ACCOUNTS_DIR, f"{account_data['phone'].replace('+', '')}.zip")
         if os.path.exists(zip_file):
             with open(zip_file, 'rb') as f:
-                await update.message.reply_document(
+                await query.message.reply_document(
                     document=f,
                     filename=os.path.basename(zip_file),
                     caption=f"✅ Аккаунт {account_data['phone']} готов!"
                 )
-        
-        context.user_data.pop('waiting_code_phone', None)
     else:
-        await status_msg.edit_text(f"❌ {message}")
+        await query.message.reply_text(f"❌ {message}")
+    
+    await back_to_menu(query, context)
 
 
 async def show_my_accounts(query, context):
@@ -351,6 +246,88 @@ async def generate_qr(query, context, filename):
         
     except Exception as e:
         await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    text = update.message.text.strip()
+    state = context.user_data.get('state')
+    
+    if state == WAITING_PHONE:
+        phone = clean_phone_number(text)
+        if len(phone) < 10 or len(phone) > 16:
+            await update.message.reply_text("❌ Неверный формат номера!\nПример: +79991234567")
+            return
+        
+        context.user_data['state'] = None
+        await start_registration(update, context, phone)
+        
+    elif state == WAITING_CODE:
+        code = text
+        if not code.isdigit():
+            await update.message.reply_text("❌ Код должен состоять только из цифр")
+            return
+        
+        context.user_data['state'] = None
+        await complete_registration(update, context, code)
+        
+    else:
+        await update.message.reply_text("Нажми /start для начала работы")
+
+
+async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, phone):
+    if phone in farm.pending_registrations:
+        await update.message.reply_text(f"⏳ Регистрация для {phone} уже идёт")
+        return
+    
+    success, message = await farm.start_registration(phone, update.effective_user.id)
+    
+    if not success:
+        await update.message.reply_text(f"❌ {message}")
+        return
+    
+    context.user_data['waiting_code_phone'] = phone
+    context.user_data['state'] = WAITING_CODE
+    
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_reg_{phone}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"📨 *{message}*\n\n✏️ Введи код из SMS:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, code):
+    phone = context.user_data.get('waiting_code_phone')
+    
+    if not phone:
+        await update.message.reply_text("❌ Нет ожидающей регистрации")
+        return
+    
+    status_msg = await update.message.reply_text("⏳ Проверяю код...")
+    
+    success, message, account_data = await farm.complete_registration(phone, code)
+    
+    if success:
+        await status_msg.edit_text(f"{message}\n\n📱 Номер: {account_data['phone']}")
+        
+        zip_file = os.path.join(ACCOUNTS_DIR, f"{account_data['phone'].replace('+', '')}.zip")
+        if os.path.exists(zip_file):
+            with open(zip_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=os.path.basename(zip_file),
+                    caption=f"✅ Аккаунт {account_data['phone']} готов!"
+                )
+        
+        context.user_data.pop('waiting_code_phone', None)
+    else:
+        await status_msg.edit_text(f"❌ {message}")
 
 
 async def export_all_accounts(query, context):
@@ -433,8 +410,7 @@ async def show_help(query, context):
         "1️⃣ *Автоферма*\n"
         "   • Нажми «АВТОФЕРМА»\n"
         "   • Выбери страну\n"
-        "   • Введи количество аккаунтов\n"
-        "   • Бот сам купит номера и зарегистрирует аккаунты\n\n"
+        "   • Бот сам купит номер и зарегистрирует аккаунт\n\n"
         "2️⃣ *Ручная регистрация*\n"
         "   • Нажми «Регистрация»\n"
         "   • Введи номер из Tiger SMS\n"
@@ -466,26 +442,6 @@ async def back_to_menu(query, context):
     ]
     
     await query.edit_message_text(
-        f"🤖 *Telegram Farm Bot*\n\n🌐 Прокси: {proxies_count}\n📁 Аккаунтов: {accounts_count}\n⏳ В процессе: {len(farm.pending_registrations)}",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-
-async def back_to_menu_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    accounts_count = len(farm.get_accounts_list())
-    proxies_count = len(farm.proxy_manager.proxies)
-    
-    keyboard = [
-        [InlineKeyboardButton("📱 Регистрация", callback_data="register")],
-        [InlineKeyboardButton("🤖 АВТОФЕРМА", callback_data="auto_farm")],
-        [InlineKeyboardButton("📦 Мои аккаунты", callback_data="my_accounts")],
-        [InlineKeyboardButton("📦 Все аккаунты", callback_data="export_all")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton("❓ Помощь", callback_data="help")],
-    ]
-    
-    await update.message.reply_text(
         f"🤖 *Telegram Farm Bot*\n\n🌐 Прокси: {proxies_count}\n📁 Аккаунтов: {accounts_count}\n⏳ В процессе: {len(farm.pending_registrations)}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
