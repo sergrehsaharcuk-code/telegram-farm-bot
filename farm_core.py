@@ -24,27 +24,36 @@ class TigerSMS:
         try:
             response = requests.get(self.api_url, params=params, timeout=30)
             result = response.text.strip()
+            print(f"Tiger SMS: {result[:200]}")
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
     def get_countries(self):
-        """Получает список стран (ID → код и название)"""
+        """Получает список стран с названиями из API Tiger SMS"""
         if self.countries_cache:
             return self.countries_cache
         
         result = self._request({'action': 'getCountries'})
         if result:
             try:
-                self.countries_cache = json.loads(result)
-                print(f"✅ Загружены страны: {len(self.countries_cache)}")
+                data = json.loads(result)
+                countries = {}
+                for country_id, info in data.items():
+                    if isinstance(info, dict):
+                        # Пробуем получить название в разных полях
+                        name = info.get('name_ru') or info.get('name') or info.get('country') or info.get('title')
+                        if name:
+                            countries[country_id] = name
+                self.countries_cache = countries
+                print(f"✅ Загружены страны: {len(countries)}")
                 # Выводим первые 5 для проверки
-                for cid, info in list(self.countries_cache.items())[:5]:
-                    print(f"  {cid} -> {info}")
-                return self.countries_cache
-            except:
-                pass
+                for cid, name in list(countries.items())[:5]:
+                    print(f"  {cid} -> {name}")
+                return countries
+            except Exception as e:
+                print(f"Ошибка парсинга стран: {e}")
         return {}
     
     def get_balance(self):
@@ -58,7 +67,7 @@ class TigerSMS:
     
     def get_prices(self):
         """Получает реальные цены на номера для Telegram"""
-        # Загружаем страны
+        # Получаем названия стран
         countries = self.get_countries()
         
         result = self._request({'action': 'getPrices', 'service': 'tg'})
@@ -73,25 +82,14 @@ class TigerSMS:
             for country_id, services in data.items():
                 if 'tg' in services:
                     cost_str = services['tg']['cost']
-                    price = float(cost_str) / 100
+                    price = float(cost_str) / 100  # из копеек в рубли
                     
-                    # Получаем информацию о стране
-                    country_name = None
-                    country_code = None
-                    
-                    if country_id in countries:
-                        country_info = countries[country_id]
-                        if isinstance(country_info, dict):
-                            country_name = country_info.get('name', country_info.get('country', None))
-                            country_code = country_info.get('country', country_info.get('code', None))
-                    
-                    # Если есть название, показываем его, иначе ID
-                    display_name = country_name if country_name else f"Страна {country_id}"
+                    # Получаем название страны
+                    country_name = countries.get(country_id, f"Страна {country_id}")
                     
                     prices.append({
                         'id': country_id,
-                        'name': display_name,
-                        'code': country_code,
+                        'name': country_name,
                         'price': price
                     })
             
@@ -220,11 +218,11 @@ class TelegramFarm:
 
     async def auto_register_country(self, user_id, country):
         """Автоматическая регистрация в выбранной стране"""
-        print(f"📱 Покупаю номер в {country}...")
+        print(f"📱 Покупаю номер в стране {country}...")
         
         number_id, phone = self.tiger_sms.get_number(service="tg", country=country)
         if not phone:
-            return False, f"Не удалось купить номер в {country}. Попробуй другую страну.", None
+            return False, f"Не удалось купить номер. Попробуй другую страну.", None
         
         print(f"✅ Номер куплен: {phone}")
         
