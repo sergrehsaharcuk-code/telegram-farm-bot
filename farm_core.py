@@ -17,17 +17,33 @@ class TigerSMS:
         self.api_key = api_key
         self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.active_numbers = {}
+        self.countries_cache = None
     
     def _request(self, params):
         params['api_key'] = self.api_key
         try:
             response = requests.get(self.api_url, params=params, timeout=30)
             result = response.text.strip()
-            print(f"Tiger SMS ответ: {result[:200]}")  # первые 200 символов
+            print(f"Tiger SMS: {result[:200]}")
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
             return None
+    
+    def get_countries(self):
+        """Получает список стран (ID → код страны)"""
+        if self.countries_cache:
+            return self.countries_cache
+        
+        result = self._request({'action': 'getCountries'})
+        if result:
+            try:
+                self.countries_cache = json.loads(result)
+                print(f"✅ Загружены страны: {len(self.countries_cache)}")
+                return self.countries_cache
+            except:
+                pass
+        return {}
     
     def get_balance(self):
         result = self._request({'action': 'getBalance'})
@@ -44,38 +60,27 @@ class TigerSMS:
         if not result:
             return None
         
-        # Выводим сырой ответ в логи для отладки
-        print(f"===== RAW PRICES RESPONSE =====")
-        print(result)
-        print(f"================================")
-        
-        # Пробуем распарсить JSON
         try:
             data = json.loads(result)
+            countries = self.get_countries()
             prices = {}
             
-            # Формат 1: {"ru": {"cost": 500}, "ua": {"cost": 450}, ...}
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    # Если ключ — двухбуквенный код страны
-                    if len(key) == 2 and isinstance(value, dict):
-                        if 'cost' in value:
-                            prices[key] = value['cost'] / 100
-                        elif 'price' in value:
-                            prices[key] = value['price'] / 100
-                    # Если значение — число
-                    elif isinstance(value, (int, float)) and len(key) == 2:
-                        prices[key] = value / 100
-            
-            # Формат 2: {"1": {"country": "ru", "cost": 500}, ...}
-            if not prices:
-                for key, value in data.items():
-                    if isinstance(value, dict) and 'country' in value and 'cost' in value:
-                        country_code = value['country'].lower()
-                        prices[country_code] = value['cost'] / 100
+            # Формат: {"0": {"tg": {"cost": "170.00", "count": 72}}, ...}
+            for country_id, services in data.items():
+                if 'tg' in services:
+                    cost_str = services['tg']['cost']
+                    price = float(cost_str) / 100  # из копеек в рубли
+                    
+                    # Получаем код страны из словаря стран
+                    if country_id in countries:
+                        country_info = countries[country_id]
+                        if isinstance(country_info, dict) and 'country' in country_info:
+                            country_code = country_info['country'].lower()
+                            if len(country_code) == 2:
+                                prices[country_code] = price
             
             if prices:
-                print(f"✅ Получены цены: {prices}")
+                print(f"✅ Получены цены для {len(prices)} стран")
                 return prices
             else:
                 print("⚠️ Не удалось распарсить цены")
