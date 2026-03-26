@@ -31,11 +31,15 @@ class TigerSMS:
             return None
     
     def get_country_names(self):
-        """Получает реальные названия стран через API"""
+        """Получает справочник названий стран (ID -> название)"""
         if self.country_names_cache:
             return self.country_names_cache
         
         result = self._request({'action': 'getCountries'})
+        print(f"===== GET COUNTRIES RESPONSE =====")
+        print(result)
+        print(f"==================================")
+        
         if result:
             try:
                 data = json.loads(result)
@@ -43,7 +47,7 @@ class TigerSMS:
                 print(f"✅ Загружены названия {len(data)} стран")
                 return data
             except:
-                print("❌ Не удалось получить названия стран через API")
+                print("❌ Не удалось получить названия стран")
         return {}
     
     def get_balance(self):
@@ -56,10 +60,11 @@ class TigerSMS:
         return None
     
     def get_prices(self):
-        """Получает реальные цены с названиями стран"""
-        # Получаем названия стран
-        names = self.get_country_names()
+        """Получает реальные цены с правильными названиями стран"""
+        # 1. Получаем справочник названий
+        country_names = self.get_country_names()
         
+        # 2. Получаем цены
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
@@ -72,21 +77,19 @@ class TigerSMS:
                 if 'tg' in services:
                     tg_data = services['tg']
                     
-                    # Цена может быть в поле cost
-                    if isinstance(tg_data, dict):
+                    # Извлекаем цену
+                    price = 0
+                    if isinstance(tg_data, list) and len(tg_data) > 0:
+                        price = float(tg_data[0].get('cost', 0))
+                    elif isinstance(tg_data, dict):
                         price = float(tg_data.get('cost', 0))
-                    elif isinstance(tg_data, list):
-                        # Берём минимальную цену
-                        price = min([float(op.get('cost', 0)) for op in tg_data if 'cost' in op])
-                    else:
-                        price = 0
                     
-                    # Получаем название страны
-                    country_name = names.get(str(country_id), f"Страна {country_id}")
+                    # Получаем название из справочника
+                    name = country_names.get(str(country_id), f"ID {country_id}")
                     
                     prices.append({
                         'id': country_id,
-                        'name': country_name,
+                        'name': name,
                         'price': price
                     })
             
@@ -96,8 +99,8 @@ class TigerSMS:
             print(f"✅ Получены цены для {len(prices)} стран")
             return prices
                 
-        except json.JSONDecodeError as e:
-            print(f"❌ Ошибка парсинга JSON: {e}")
+        except Exception as e:
+            print(f"❌ Ошибка обработки цен: {e}")
             return None
     
     def get_number(self, service="tg", country="any", operator=None):
@@ -223,7 +226,7 @@ class TelegramFarm:
         
         number_id, phone = self.tiger_sms.get_number(service="tg", country=country_id)
         if not phone:
-            return False, f"Не удалось купить номер в стране {country_id}. Попробуй другую.", None
+            return False, f"Не удалось купить номер. Попробуй другую страну.", None
         
         print(f"✅ Номер куплен: {phone}")
         
