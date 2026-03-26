@@ -111,17 +111,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_countries(query, context):
-    """Показывает список стран с ценами"""
+    """Показывает список стран с реальными ценами"""
     await query.edit_message_text("⏳ Загружаю цены...")
     
     prices = farm.tiger_sms.get_prices()
     if not prices:
-        await query.edit_message_text("❌ Не удалось загрузить цены")
+        await query.edit_message_text(
+            "❌ Не удалось загрузить цены.\n\n"
+            "Проверь подключение к Tiger SMS.\n"
+            "Баланс: " + str(farm.tiger_sms.get_balance()) + " руб"
+        )
         return
     
     keyboard = []
-    for country, data in prices.items():
-        price = data.get('cost', 0) / 100
+    # Сортируем страны по цене
+    sorted_countries = sorted(prices.items(), key=lambda x: x[1])
+    for country, price in sorted_countries[:20]:  # показываем 20 стран
         keyboard.append([InlineKeyboardButton(
             f"📱 {country.upper()} - {price:.2f} руб", 
             callback_data=f"buy_{country}"
@@ -129,8 +134,12 @@ async def show_countries(query, context):
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
+    balance = farm.tiger_sms.get_balance()
+    balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
+    
     await query.edit_message_text(
-        "💸 *Выбери страну для номера:*",
+        f"💸 *Выбери страну для номера:*\n\n"
+        f"{balance_text}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
