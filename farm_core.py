@@ -18,6 +18,7 @@ class TigerSMS:
         self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.active_numbers = {}
         self.country_names_cache = None
+        self.last_cache_time = None
     
     def _request(self, params):
         params['api_key'] = self.api_key
@@ -30,25 +31,31 @@ class TigerSMS:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
-    def get_country_names(self):
-        """Получает справочник названий стран (ID -> название)"""
-        if self.country_names_cache:
-            return self.country_names_cache
+    def get_actual_country_names(self):
+        """Автоматически тянет список соответствий ID -> Название с API"""
+        # Кэшируем на 1 час
+        if self.country_names_cache and self.last_cache_time:
+            if datetime.now() - self.last_cache_time < timedelta(hours=1):
+                return self.country_names_cache
         
         result = self._request({'action': 'getCountries'})
         print(f"===== GET COUNTRIES RESPONSE =====")
         print(result)
         print(f"==================================")
         
-        if result:
-            try:
-                data = json.loads(result)
+        try:
+            data = json.loads(result)
+            if isinstance(data, dict):
                 self.country_names_cache = data
-                print(f"✅ Загружены названия {len(data)} стран")
+                self.last_cache_time = datetime.now()
+                print(f"✅ Успешно загружено {len(data)} названий стран")
                 return data
-            except:
-                print("❌ Не удалось получить названия стран")
-        return {}
+            else:
+                print("⚠️ API вернул неожиданный формат")
+                return {}
+        except Exception as e:
+            print(f"⚠️ Ошибка авто-получения названий: {e}")
+            return {}
     
     def get_balance(self):
         result = self._request({'action': 'getBalance'})
@@ -60,9 +67,9 @@ class TigerSMS:
         return None
     
     def get_prices(self):
-        """Получает реальные цены с правильными названиями стран"""
-        # 1. Получаем справочник названий
-        country_names = self.get_country_names()
+        """Метод без ручных словарей: всё тянем из API в реальном времени"""
+        # 1. Сначала дергаем актуальные имена
+        names_map = self.get_actual_country_names()
         
         # 2. Получаем цены
         result = self._request({'action': 'getPrices', 'service': 'tg'})
@@ -72,35 +79,31 @@ class TigerSMS:
         try:
             data = json.loads(result)
             prices = []
-            
             for country_id, services in data.items():
                 if 'tg' in services:
-                    tg_data = services['tg']
+                    c_id_str = str(country_id)
                     
-                    # Извлекаем цену
-                    price = 0
-                    if isinstance(tg_data, list) and len(tg_data) > 0:
-                        price = float(tg_data[0].get('cost', 0))
-                    elif isinstance(tg_data, dict):
-                        price = float(tg_data.get('cost', 0))
+                    # Берем имя ТОЛЬКО из ответа API
+                    name = names_map.get(c_id_str, f"Страна {c_id_str}")
                     
-                    # Получаем название из справочника
-                    name = country_names.get(str(country_id), f"ID {country_id}")
-                    
+                    tg_info = services['tg']
+                    # Обработка разных форматов ответа (список или объект)
+                    if isinstance(tg_info, list) and len(tg_info) > 0:
+                        cost = tg_info[0].get('cost', 0)
+                    else:
+                        cost = tg_info.get('cost', 0)
+
                     prices.append({
                         'id': country_id,
-                        'name': name,
-                        'price': price
+                        'name': name, 
+                        'price': float(cost)
                     })
             
-            # Сортируем по цене
             prices.sort(key=lambda x: x['price'])
-            
             print(f"✅ Получены цены для {len(prices)} стран")
             return prices
-                
         except Exception as e:
-            print(f"❌ Ошибка обработки цен: {e}")
+            print(f"❌ Ошибка парсинга цен: {e}")
             return None
     
     def get_number(self, service="tg", country="any", operator=None):
@@ -221,7 +224,6 @@ class TelegramFarm:
         return self.proxy_manager.load_proxies()
 
     async def buy_number_by_country_id(self, user_id, country_id):
-        """Покупает номер в указанной стране по ID"""
         print(f"📱 Покупаю номер в стране {country_id}...")
         
         number_id, phone = self.tiger_sms.get_number(service="tg", country=country_id)
