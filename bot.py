@@ -130,15 +130,30 @@ async def show_countries(query, context):
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
     await query.edit_message_text(
-        "💸 *Выбери страну для номера:*\n\n"
-        "Цены указаны за один номер.",
+        "💸 *Выбери страну для номера:*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
 
 
 async def buy_number(query, context, country):
-    """Покупает номер в выбранной стране"""
+    """Покупает номер в выбранной стране (с проверкой баланса)"""
+    # Проверяем баланс
+    balance = farm.tiger_sms.get_balance()
+    if balance is None:
+        await query.edit_message_text("❌ Не удалось подключиться к Tiger SMS")
+        return
+    
+    if balance < 5:
+        await query.edit_message_text(
+            f"❌ *Недостаточно средств!*\n\n"
+            f"💰 Баланс: *{balance:.2f} руб*\n"
+            f"📱 Номер в *{country.upper()}* стоит ~5 руб\n\n"
+            f"Пополни баланс на Tiger SMS и попробуй снова.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
     await query.edit_message_text(f"🤖 Покупаю номер в {country.upper()}...\n\n⏳ Жди, это может занять минуту.")
     
     success, message, account_data = await farm.auto_register_country(query.from_user.id, country)
