@@ -24,14 +24,13 @@ class TigerSMS:
         try:
             response = requests.get(self.api_url, params=params, timeout=30)
             result = response.text.strip()
-            print(f"Tiger SMS: {result[:200]}")
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
             return None
     
     def get_countries(self):
-        """Получает список стран (ID → код страны)"""
+        """Получает список стран (ID → код и название)"""
         if self.countries_cache:
             return self.countries_cache
         
@@ -40,6 +39,9 @@ class TigerSMS:
             try:
                 self.countries_cache = json.loads(result)
                 print(f"✅ Загружены страны: {len(self.countries_cache)}")
+                # Выводим первые 5 для проверки
+                for cid, info in list(self.countries_cache.items())[:5]:
+                    print(f"  {cid} -> {info}")
                 return self.countries_cache
             except:
                 pass
@@ -56,42 +58,48 @@ class TigerSMS:
     
     def get_prices(self):
         """Получает реальные цены на номера для Telegram"""
+        # Загружаем страны
+        countries = self.get_countries()
+        
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
         
-        print(f"===== RAW PRICES RESPONSE =====")
-        print(result[:500])
-        print(f"================================")
-        
         try:
             data = json.loads(result)
-            countries = self.get_countries()
-            prices = {}
+            prices = []
             
             # Формат: {"0": {"tg": {"cost": "170.00", "count": 89}}, ...}
             for country_id, services in data.items():
                 if 'tg' in services:
                     cost_str = services['tg']['cost']
-                    price = float(cost_str) / 100  # из копеек в рубли
+                    price = float(cost_str) / 100
                     
-                    # Получаем код страны
+                    # Получаем информацию о стране
+                    country_name = None
+                    country_code = None
+                    
                     if country_id in countries:
                         country_info = countries[country_id]
-                        if isinstance(country_info, dict) and 'country' in country_info:
-                            country_code = country_info['country'].lower()
-                            if len(country_code) == 2:
-                                prices[country_code] = price
-                    else:
-                        # Если нет в словаре стран, используем ID
-                        prices[f"id_{country_id}"] = price
+                        if isinstance(country_info, dict):
+                            country_name = country_info.get('name', country_info.get('country', None))
+                            country_code = country_info.get('country', country_info.get('code', None))
+                    
+                    # Если есть название, показываем его, иначе ID
+                    display_name = country_name if country_name else f"Страна {country_id}"
+                    
+                    prices.append({
+                        'id': country_id,
+                        'name': display_name,
+                        'code': country_code,
+                        'price': price
+                    })
             
-            if prices:
-                print(f"✅ Получены цены для {len(prices)} стран")
-                return prices
-            else:
-                print("⚠️ Не удалось распарсить цены")
-                return None
+            # Сортируем по цене
+            prices.sort(key=lambda x: x['price'])
+            
+            print(f"✅ Получены цены для {len(prices)} стран")
+            return prices
                 
         except json.JSONDecodeError as e:
             print(f"❌ Ошибка парсинга JSON: {e}")
