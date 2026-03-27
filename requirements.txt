@@ -5,3 +5,4 @@ PySocks==1.7.1
 qrcode==7.4.2
 pillow==10.0.0
 pycountry==24.6.1
+pycountry-locales==0.1.0
