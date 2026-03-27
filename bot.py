@@ -86,8 +86,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif data == "auto_farm":
         await auto_farm(query, context)
-    elif data.startswith("buy_country_"):
-        country_id = data.replace("buy_country_", "")
+    elif data.startswith("buy_"):
+        country_id = data.replace("buy_", "")
         await buy_number(query, context, country_id)
     elif data == "my_accounts":
         await show_my_accounts(query, context)
@@ -114,7 +114,7 @@ async def auto_farm(query, context):
     """Показывает список стран с ценами"""
     await query.edit_message_text("🌍 Загружаю актуальные страны и цены...")
     
-    prices = farm.tiger_sms.get_prices()
+    prices = farm.get_countries_with_prices()
     
     if not prices:
         await query.edit_message_text("❌ Ошибка связи с Tiger SMS. Проверьте баланс и API ключ.")
@@ -125,13 +125,13 @@ async def auto_farm(query, context):
         keyboard.append([
             InlineKeyboardButton(
                 f"✅ {item['name']} — {item['price']:.2f} ₽", 
-                callback_data=f"buy_country_{item['id']}"
+                callback_data=f"buy_{item['id']}"
             )
         ])
     
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     
-    balance = farm.tiger_sms.get_balance()
+    balance = farm.get_balance()
     balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
     
     await query.edit_message_text(
@@ -144,7 +144,7 @@ async def auto_farm(query, context):
 async def buy_number(query, context, country_id):
     """Покупает номер в выбранной стране"""
     # Проверяем баланс
-    balance = farm.tiger_sms.get_balance()
+    balance = farm.get_balance()
     if balance is None:
         await query.edit_message_text("❌ Не удалось подключиться к Tiger SMS")
         return
