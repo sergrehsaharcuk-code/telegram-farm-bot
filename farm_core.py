@@ -6,11 +6,21 @@ import requests
 import socks
 import asyncio
 import pycountry
+import locale
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
 
 from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
+
+# Устанавливаем русскую локаль для pycountry
+try:
+    locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
+except:
+    try:
+        locale.setlocale(locale.LC_ALL, 'russian')
+    except:
+        print("⚠️ Русская локаль не установлена, буду использовать английские названия")
 
 
 class TigerSMS:
@@ -40,8 +50,7 @@ class TigerSMS:
         return None
     
     def get_prices(self):
-        """Получает цены с автоматическим определением названий стран"""
-        # Получаем цены
+        """Получает цены с русскими названиями стран"""
         result = self._request({'action': 'getPrices', 'service': 'tg'})
         if not result:
             return None
@@ -60,8 +69,8 @@ class TigerSMS:
                     else:
                         cost = tg_info.get('cost', 0)
                     
-                    # Получаем название страны через pycountry
-                    name = self._get_country_name(country_id)
+                    # Получаем русское название страны
+                    name = self._get_country_name_ru(country_id)
                     
                     prices.append({
                         'id': country_id,
@@ -77,19 +86,29 @@ class TigerSMS:
             print(f"❌ Ошибка обработки цен: {e}")
             return None
     
-    def _get_country_name(self, country_id):
-        """Автоматически определяет название страны по ID"""
+    def _get_country_name_ru(self, country_id):
+        """Возвращает русское название страны по ID"""
         try:
-            # Пробуем как цифровой код ISO 3166-1 numeric (с 3 цифрами)
+            # Пробуем как цифровой код ISO 3166-1 numeric
             country_id_padded = str(country_id).zfill(3)
             country = pycountry.countries.get(numeric=country_id_padded)
             if country:
+                # Пробуем получить русское название
+                try:
+                    # pycountry-locales даёт локализованные названия
+                    from pycountry_locales import countries
+                    ru_name = countries.get(alpha_2=country.alpha_2, language='ru')
+                    if ru_name:
+                        return ru_name
+                except:
+                    pass
+                # Если библиотека не установлена, используем английское
                 return country.name
         except:
             pass
         
         try:
-            # Пробуем как двухбуквенный код ISO 3166-1 alpha-2
+            # Пробуем как двухбуквенный код
             country = pycountry.countries.get(alpha_2=str(country_id))
             if country:
                 return country.name
@@ -97,7 +116,7 @@ class TigerSMS:
             pass
         
         try:
-            # Пробуем как трехбуквенный код ISO 3166-1 alpha-3
+            # Пробуем как трехбуквенный код
             country = pycountry.countries.get(alpha_3=str(country_id))
             if country:
                 return country.name
