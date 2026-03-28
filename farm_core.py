@@ -5,7 +5,6 @@ import shutil
 import requests
 import socks
 import asyncio
-import pycountry
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
@@ -14,36 +13,53 @@ from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
 
 
 class TigerSMSClient:
-    """Чистый API клиент — только запросы к Tiger SMS"""
-    
+    """Клиент для работы с Tiger SMS API (официальный и старый)"""
+
     def __init__(self, api_key):
         self.api_key = api_key
-        self.api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
-    
-    def _request(self, params):
+        self.old_api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
+        self.new_api_url = "https://tiger-sms.com/api/v2/services/tg/prices"
+
+    def _request_old(self, params):
+        """Старый API для покупки номеров и баланса"""
         params['api_key'] = self.api_key
         try:
-            response = requests.get(self.api_url, params=params, timeout=30)
+            response = requests.get(self.old_api_url, params=params, timeout=30)
             result = response.text.strip()
-            print(f"Tiger SMS: {result[:200]}")
+            print(f"Tiger SMS (old): {result[:200]}")
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
             return None
-    
+
     def get_balance(self):
-        result = self._request({'action': 'getBalance'})
+        result = self._request_old({'action': 'getBalance'})
         if result and result.startswith('ACCESS_BALANCE'):
             try:
                 return float(result.split(':')[1])
             except:
                 return None
         return None
-    
-    def get_prices_raw(self):
-        return self._request({'action': 'getPrices', 'service': 'tg'})
-    
+
+    def get_prices_from_site(self):
+        """Получает цены напрямую с сайта Tiger SMS"""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "X-Requested-With": "XMLHttpRequest"
+        }
+        try:
+            response = requests.get(self.new_api_url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                print(f"✅ Получены цены с сайта: {len(data)} стран")
+                return data
+        except Exception as e:
+            print(f"Ошибка получения цен с сайта: {e}")
+        return None
+
     def buy_number(self, country_id, operator=None):
+        """Покупка номера через старый API"""
         params = {
             'action': 'getNumber',
             'service': 'tg',
@@ -51,188 +67,19 @@ class TigerSMSClient:
         }
         if operator:
             params['operator'] = operator
-        
-        result = self._request(params)
+
+        result = self._request_old(params)
         if result and result.startswith('ACCESS_NUMBER'):
             parts = result.split(':')
             if len(parts) >= 3:
                 return parts[1], parts[2]
         return None, None
-    
+
     def get_code_status(self, number_id):
-        return self._request({'action': 'getStatus', 'id': number_id})
-    
+        return self._request_old({'action': 'getStatus', 'id': number_id})
+
     def cancel_number(self, number_id):
-        self._request({'action': 'setStatus', 'id': number_id, 'status': 8})
-
-
-class CountryMapper:
-    """Преобразует ID стран в названия (pycountry + ручные исключения)"""
-    
-    # Ручные исключения для ID, которых нет в pycountry
-    MANUAL_NAMES = {
-        "0": "Россия",
-        "1": "Украина",
-        "10": "Казахстан",
-        "100": "США",
-        "1001": "Великобритания",
-        "101": "Германия",
-        "102": "Франция",
-        "103": "Италия",
-        "104": "Испания",
-        "105": "Турция",
-        "106": "Израиль",
-        "107": "ОАЭ",
-        "108": "Индия",
-        "109": "Китай",
-        "110": "Япония",
-        "111": "Южная Корея",
-        "112": "Бразилия",
-        "113": "Мексика",
-        "114": "Канада",
-        "115": "Австралия",
-        "116": "Нидерланды",
-        "117": "Швеция",
-        "118": "Норвегия",
-        "119": "Финляндия",
-        "120": "Дания",
-        "121": "Польша",
-        "122": "Чехия",
-        "123": "Австрия",
-        "124": "Швейцария",
-        "125": "Бельгия",
-        "126": "Португалия",
-        "127": "Греция",
-        "128": "Венгрия",
-        "129": "Румыния",
-        "130": "Болгария",
-        "131": "Сербия",
-        "132": "Хорватия",
-        "133": "Словакия",
-        "134": "Словения",
-        "135": "Литва",
-        "136": "Латвия",
-        "137": "Эстония",
-        "138": "Ирландия",
-        "139": "Новая Зеландия",
-        "140": "ЮАР",
-        "141": "Египет",
-        "142": "Саудовская Аравия",
-        "143": "Индонезия",
-        "144": "Малайзия",
-        "145": "Сингапур",
-        "146": "Филиппины",
-        "147": "Вьетнам",
-        "148": "Таиланд",
-        "149": "Пакистан",
-        "150": "Бангладеш",
-        "151": "Нигерия",
-        "152": "Кения",
-        "153": "Гана",
-        "154": "Танзания",
-        "155": "Уганда",
-        "156": "Камерун",
-        "157": "Зимбабве",
-        "158": "Марокко",
-        "159": "Алжир",
-        "160": "Тунис",
-    }
-    
-    @classmethod
-    def get_name(cls, country_id):
-        """Возвращает название страны по ID"""
-        cid = str(country_id)
-        
-        # 1. Проверяем ручной список
-        if cid in cls.MANUAL_NAMES:
-            return cls.MANUAL_NAMES[cid]
-        
-        # 2. Пробуем через pycountry (по цифровому коду ISO)
-        try:
-            country = pycountry.countries.get(numeric=cid.zfill(3))
-            if country:
-                return country.name
-        except:
-            pass
-        
-        # 3. Пробуем через pycountry (по alpha-2)
-        try:
-            country = pycountry.countries.get(alpha_2=cid)
-            if country:
-                return country.name
-        except:
-            pass
-        
-        # 4. Если ничего не помогло
-        return f"Страна {cid}"
-
-
-class TigerSMSManager:
-    """Менеджер Tiger SMS — собирает данные, управляет покупками"""
-    
-    def __init__(self, api_key):
-        self.client = TigerSMSClient(api_key)
-        self.mapper = CountryMapper
-    
-    def get_balance(self):
-        return self.client.get_balance()
-    
-    def get_countries_with_prices(self):
-        """Возвращает список стран с ценами"""
-        raw = self.client.get_prices_raw()
-        if not raw:
-            return None
-        
-        try:
-            data = json.loads(raw)
-            result = []
-            
-            for country_id, services in data.items():
-                if 'tg' in services:
-                    tg_info = services['tg']
-                    
-                    # Извлекаем цену
-                    if isinstance(tg_info, list) and len(tg_info) > 0:
-                        price = float(tg_info[0].get('cost', 0))
-                    else:
-                        price = float(tg_info.get('cost', 0))
-                    
-                    # Получаем название
-                    name = self.mapper.get_name(country_id)
-                    
-                    result.append({
-                        'id': country_id,
-                        'name': name,
-                        'price': price
-                    })
-            
-            # Сортируем по цене
-            result.sort(key=lambda x: x['price'])
-            return result
-            
-        except Exception as e:
-            print(f"Ошибка обработки цен: {e}")
-            return None
-    
-    async def buy_number(self, country_id, operator=None):
-        """Покупает номер и возвращает (number_id, phone)"""
-        return self.client.buy_number(country_id, operator)
-    
-    async def wait_for_code(self, number_id, timeout=120):
-        """Ожидает код SMS"""
-        start_time = asyncio.get_event_loop().time()
-        while asyncio.get_event_loop().time() - start_time < timeout:
-            result = self.client.get_code_status(number_id)
-            if result and result.startswith('STATUS_OK'):
-                return result.split(':')[1]
-            elif result and result.startswith('STATUS_WAIT_CODE'):
-                await asyncio.sleep(5)
-            else:
-                await asyncio.sleep(5)
-        return None
-    
-    def cancel_number(self, number_id):
-        self.client.cancel_number(number_id)
+        self._request_old({'action': 'setStatus', 'id': number_id, 'status': 8})
 
 
 class ProxyManager:
@@ -244,17 +91,17 @@ class ProxyManager:
 
     def load_proxies(self):
         url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
-        
+
         try:
             print("🌐 Загрузка прокси...")
             response = requests.get(url, timeout=15)
             if response.status_code != 200:
                 print("Ошибка загрузки прокси")
                 return 0
-            
+
             lines = response.text.strip().split('\n')
             self.proxies = []
-            
+
             for line in lines[:50]:
                 line = line.strip()
                 if line and ':' in line:
@@ -262,7 +109,7 @@ class ProxyManager:
                     if parsed:
                         self.proxies.append(parsed)
                         print(f"✅ Прокси: {parsed[1]}:{parsed[2]}")
-            
+
             print(f"✅ Загружено прокси: {len(self.proxies)}")
             self.current_index = 0
             return len(self.proxies)
@@ -312,54 +159,67 @@ class TelegramFarm:
         self.sessions_dir = sessions_dir
         self.pending_registrations = {}
         self.proxy_manager = ProxyManager()
-        self.tiger_manager = TigerSMSManager(TIGER_API_KEY)
-        
+        self.tiger_client = TigerSMSClient(TIGER_API_KEY)
+
         os.makedirs(self.accounts_dir, exist_ok=True)
         os.makedirs(self.sessions_dir, exist_ok=True)
 
     def load_proxies(self):
         return self.proxy_manager.load_proxies()
-    
+
     def get_countries_with_prices(self):
         """Возвращает список стран с ценами для бота"""
-        return self.tiger_manager.get_countries_with_prices()
-    
+        return self.tiger_client.get_prices_from_site()
+
     def get_balance(self):
-        return self.tiger_manager.get_balance()
+        return self.tiger_client.get_balance()
 
     async def buy_number_by_country_id(self, user_id, country_id):
         """Покупает номер в указанной стране по ID"""
         print(f"📱 Покупаю номер в стране {country_id}...")
-        
-        number_id, phone = await self.tiger_manager.buy_number(country_id)
+
+        number_id, phone = self.tiger_client.buy_number(country_id)
         if not phone:
             return False, f"Не удалось купить номер. Попробуй другую страну.", None
-        
+
         print(f"✅ Номер куплен: {phone}")
-        
+
         success, msg = await self.start_registration(phone, user_id)
         if not success:
-            self.tiger_manager.cancel_number(number_id)
+            self.tiger_client.cancel_number(number_id)
             return False, msg, None
-        
+
         print("⏳ Жду код...")
-        code = await self.tiger_manager.wait_for_code(number_id)
+        code = await self.wait_for_code(number_id)
         if not code:
-            self.tiger_manager.cancel_number(number_id)
+            self.tiger_client.cancel_number(number_id)
             return False, "Код не пришёл за 2 минуты", None
-        
+
         print(f"📨 Код: {code}")
-        
+
         success, msg, data = await self.complete_registration(phone, code)
         if success:
             return True, msg, data
         else:
-            self.tiger_manager.cancel_number(number_id)
+            self.tiger_client.cancel_number(number_id)
             return False, msg, None
+
+    async def wait_for_code(self, number_id, timeout=120):
+        """Ожидает код SMS"""
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            result = self.tiger_client.get_code_status(number_id)
+            if result and result.startswith('STATUS_OK'):
+                return result.split(':')[1]
+            elif result and result.startswith('STATUS_WAIT_CODE'):
+                await asyncio.sleep(5)
+            else:
+                await asyncio.sleep(5)
+        return None
 
     async def start_registration(self, phone, user_id):
         proxy = self.proxy_manager.get_working_proxy()
-        
+
         session_name = f"session_{phone.replace('+', '')}"
         session_path = os.path.join(self.sessions_dir, session_name)
 
