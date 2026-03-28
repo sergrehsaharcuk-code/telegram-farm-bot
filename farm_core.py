@@ -13,7 +13,7 @@ from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
 
 
 class TigerSMSClient:
-    """Клиент для работы с Tiger SMS API (официальный и старый)"""
+    """Клиент для работы с Tiger SMS API"""
 
     def __init__(self, api_key):
         self.api_key = api_key
@@ -21,7 +21,6 @@ class TigerSMSClient:
         self.new_api_url = "https://tiger-sms.com/api/v2/services/tg/prices"
 
     def _request_old(self, params):
-        """Старый API для покупки номеров и баланса"""
         params['api_key'] = self.api_key
         try:
             response = requests.get(self.old_api_url, params=params, timeout=30)
@@ -59,7 +58,6 @@ class TigerSMSClient:
         return None
 
     def buy_number(self, country_id, operator=None):
-        """Покупка номера через старый API"""
         params = {
             'action': 'getNumber',
             'service': 'tg',
@@ -80,6 +78,87 @@ class TigerSMSClient:
 
     def cancel_number(self, number_id):
         self._request_old({'action': 'setStatus', 'id': number_id, 'status': 8})
+
+
+# Словарь русских названий стран
+COUNTRY_NAMES_RU = {
+    "0": "Россия",
+    "1": "Украина",
+    "10": "Казахстан",
+    "100": "США",
+    "1001": "Великобритания",
+    "101": "Германия",
+    "102": "Франция",
+    "103": "Италия",
+    "104": "Испания",
+    "105": "Турция",
+    "106": "Израиль",
+    "107": "ОАЭ",
+    "108": "Индия",
+    "109": "Китай",
+    "110": "Япония",
+    "111": "Южная Корея",
+    "112": "Бразилия",
+    "113": "Мексика",
+    "114": "Канада",
+    "115": "Австралия",
+    "116": "Нидерланды",
+    "117": "Швеция",
+    "118": "Норвегия",
+    "119": "Финляндия",
+    "120": "Дания",
+    "121": "Польша",
+    "122": "Чехия",
+    "123": "Австрия",
+    "124": "Швейцария",
+    "125": "Бельгия",
+    "126": "Португалия",
+    "127": "Греция",
+    "128": "Венгрия",
+    "129": "Румыния",
+    "130": "Болгария",
+    "131": "Сербия",
+    "132": "Хорватия",
+    "133": "Словакия",
+    "134": "Словения",
+    "135": "Литва",
+    "136": "Латвия",
+    "137": "Эстония",
+    "138": "Ирландия",
+    "139": "Новая Зеландия",
+    "140": "ЮАР",
+    "141": "Египет",
+    "142": "Саудовская Аравия",
+    "143": "Индонезия",
+    "144": "Малайзия",
+    "145": "Сингапур",
+    "146": "Филиппины",
+    "147": "Вьетнам",
+    "148": "Таиланд",
+    "149": "Пакистан",
+    "150": "Бангладеш",
+    "151": "Нигерия",
+    "152": "Кения",
+    "153": "Гана",
+    "154": "Танзания",
+    "155": "Уганда",
+    "156": "Камерун",
+    "157": "Зимбабве",
+    "158": "Марокко",
+    "159": "Алжир",
+    "160": "Тунис",
+    "41": "Аргентина",
+    "19": "Нидерланды",
+    "93": "Пакистан",
+    "38": "Камбоджа",
+    "21": "Лаос",
+    "61": "Гвинея",
+}
+
+
+def get_country_name_ru(country_id):
+    """Возвращает русское название страны по ID"""
+    return COUNTRY_NAMES_RU.get(str(country_id), f"Страна {country_id}")
 
 
 class ProxyManager:
@@ -168,14 +247,33 @@ class TelegramFarm:
         return self.proxy_manager.load_proxies()
 
     def get_countries_with_prices(self):
-        """Возвращает список стран с ценами для бота"""
-        return self.tiger_client.get_prices_from_site()
+        """Возвращает список стран с ценами и русскими названиями"""
+        raw_data = self.tiger_client.get_prices_from_site()
+        if not raw_data:
+            return None
+
+        result = []
+        for item in raw_data:
+            # Пытаемся получить ID и цену из разных форматов
+            country_id = item.get('country_id') or item.get('id')
+            price = item.get('price') or item.get('cost', 0)
+            
+            if country_id is not None:
+                name = get_country_name_ru(country_id)
+                result.append({
+                    'id': str(country_id),
+                    'name': name,
+                    'price': float(price)
+                })
+
+        # Сортируем по цене (дешёвые сверху)
+        result.sort(key=lambda x: x['price'])
+        return result
 
     def get_balance(self):
         return self.tiger_client.get_balance()
 
     async def buy_number_by_country_id(self, user_id, country_id):
-        """Покупает номер в указанной стране по ID"""
         print(f"📱 Покупаю номер в стране {country_id}...")
 
         number_id, phone = self.tiger_client.buy_number(country_id)
@@ -205,7 +303,6 @@ class TelegramFarm:
             return False, msg, None
 
     async def wait_for_code(self, number_id, timeout=120):
-        """Ожидает код SMS"""
         start_time = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start_time < timeout:
             result = self.tiger_client.get_code_status(number_id)
