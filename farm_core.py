@@ -114,20 +114,29 @@ class TigerSMSClient:
                 return None
         return None
 
-    def get_prices(self):
-        """Получает цены через старый API"""
+        def get_prices(self):
+        """Получает цены с выводом ответа для диагностики"""
         result = self._request_old({'action': 'getPrices', 'service': 'tg'})
+        
+        # ДЕБАГ: смотрим, что пришло
+        print(f"===== ДЕБАГ: ОТВЕТ ОТ TIGER API =====")
+        print(result)
+        print(f"=====================================")
+
         if not result:
+            print("❌ Пустой ответ от API")
+            return None
+        
+        if "ERROR" in result or "BAD" in result:
+            print(f"❌ Ошибка API: {result}")
             return None
         
         try:
             data = json.loads(result)
             prices = []
-            
             for country_id, services in data.items():
                 if 'tg' in services:
                     tg_info = services['tg']
-                    
                     if isinstance(tg_info, list) and len(tg_info) > 0:
                         price = float(tg_info[0].get('cost', 0))
                     else:
@@ -145,7 +154,7 @@ class TigerSMSClient:
             print(f"✅ Получены цены для {len(prices)} стран")
             return prices
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f"❌ Ошибка парсинга: {e}")
             return None
 
     def buy_number(self, country_id, operator=None):
