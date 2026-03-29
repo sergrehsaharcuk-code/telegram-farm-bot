@@ -19,8 +19,15 @@ class TigerSMSClient:
         self.api_key = api_key
         self.old_api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.new_api_url = "https://tiger-sms.com/api/v2/services/tg/prices"
+        
+        # Куки для авторизации на сайте (получены из браузера)
+        self.cookies = {
+            'tigersms_session': 'eyJpdiI6InNhVTFBbEswMXBEYlp5c0F0ZTJDYUE9PSIsInZhbHVlIjoiQTlNLy9IT3d3SXB4L2JReE1wVmJieTRjUnlYTU5xeXcxZkdtY09pWG5QdWN4bTdmZDkxYzV0MGkzKyt0SHprbHg1cjJBSjU0b2VrSVZYc3lCMXFxZVJNYVpzbllreVdUajk0amRRN3JUUDdIS3I3cnN5aXU4U1psVGpkRkNWeGkiLCJtYWMiOiIwMmEzMmVlMjA0Njc2MTgwNzgwYTUzNzkyZTQ4ZDc3YzZiNTM3MTQxNGQzMmM0ZGNmOTllMmViOGU0MWJhOWM4IiwidGFnIjoiIn0%3D',
+            'XSRF-TOKEN': 'eyJpdiI6IndvL3FhL3JwMVhWVzVkMTBkRlVmK1E9PSIsInZhbHVlIjoiVGt2QkJzYUtpWFJWK0M1KzVUenpsMHhkSm1kcGpyeHo0UkVJOVRKWmRpSE96c0JST2ZOeDFyUUk5dGYwdEp0MXQzUVZ1eEhUbWcyY0JjeHVYRldMazVhai9JZjR0emNyNGFzaVVQYzZ0YjloYWYxWDYzYjRBSDFFT0lDalcyelAiLCJtYWMiOiJlNGVjYjZmM2FlYjBjMTg2NmRlYjRhNmZlZDA5NDhlNTY4M2Q2Y2NlYWYzMjg2ZGFjODY4YWI5NWEyMDE3YjNkIiwidGFnIjoiIn0%3D',
+        }
 
     def _request_old(self, params):
+        """Старый API для покупки номеров и баланса"""
         params['api_key'] = self.api_key
         try:
             response = requests.get(self.old_api_url, params=params, timeout=30)
@@ -41,21 +48,27 @@ class TigerSMSClient:
         return None
 
     def get_prices_from_site(self):
-        """Получает цены напрямую с сайта Tiger SMS"""
+        """Получает цены напрямую с сайта Tiger SMS через API с авторизацией"""
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json",
-            "X-Requested-With": "XMLHttpRequest"
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://tiger-sms.com/ru',
         }
+        
         try:
-            response = requests.get(self.new_api_url, headers=headers, timeout=15)
+            response = requests.get(self.new_api_url, headers=headers, cookies=self.cookies, timeout=15)
+            print(f"API ответ: {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
                 print(f"✅ Получены цены с сайта: {len(data)} стран")
                 return data
+            else:
+                print(f"Ошибка API: {response.text[:200]}")
+                return None
         except Exception as e:
             print(f"Ошибка получения цен с сайта: {e}")
-        return None
+            return None
 
     def buy_number(self, country_id, operator=None):
         params = {
@@ -78,87 +91,6 @@ class TigerSMSClient:
 
     def cancel_number(self, number_id):
         self._request_old({'action': 'setStatus', 'id': number_id, 'status': 8})
-
-
-# Словарь русских названий стран
-COUNTRY_NAMES_RU = {
-    "0": "Россия",
-    "1": "Украина",
-    "10": "Казахстан",
-    "100": "США",
-    "1001": "Великобритания",
-    "101": "Германия",
-    "102": "Франция",
-    "103": "Италия",
-    "104": "Испания",
-    "105": "Турция",
-    "106": "Израиль",
-    "107": "ОАЭ",
-    "108": "Индия",
-    "109": "Китай",
-    "110": "Япония",
-    "111": "Южная Корея",
-    "112": "Бразилия",
-    "113": "Мексика",
-    "114": "Канада",
-    "115": "Австралия",
-    "116": "Нидерланды",
-    "117": "Швеция",
-    "118": "Норвегия",
-    "119": "Финляндия",
-    "120": "Дания",
-    "121": "Польша",
-    "122": "Чехия",
-    "123": "Австрия",
-    "124": "Швейцария",
-    "125": "Бельгия",
-    "126": "Португалия",
-    "127": "Греция",
-    "128": "Венгрия",
-    "129": "Румыния",
-    "130": "Болгария",
-    "131": "Сербия",
-    "132": "Хорватия",
-    "133": "Словакия",
-    "134": "Словения",
-    "135": "Литва",
-    "136": "Латвия",
-    "137": "Эстония",
-    "138": "Ирландия",
-    "139": "Новая Зеландия",
-    "140": "ЮАР",
-    "141": "Египет",
-    "142": "Саудовская Аравия",
-    "143": "Индонезия",
-    "144": "Малайзия",
-    "145": "Сингапур",
-    "146": "Филиппины",
-    "147": "Вьетнам",
-    "148": "Таиланд",
-    "149": "Пакистан",
-    "150": "Бангладеш",
-    "151": "Нигерия",
-    "152": "Кения",
-    "153": "Гана",
-    "154": "Танзания",
-    "155": "Уганда",
-    "156": "Камерун",
-    "157": "Зимбабве",
-    "158": "Марокко",
-    "159": "Алжир",
-    "160": "Тунис",
-    "41": "Аргентина",
-    "19": "Нидерланды",
-    "93": "Пакистан",
-    "38": "Камбоджа",
-    "21": "Лаос",
-    "61": "Гвинея",
-}
-
-
-def get_country_name_ru(country_id):
-    """Возвращает русское название страны по ID"""
-    return COUNTRY_NAMES_RU.get(str(country_id), f"Страна {country_id}")
 
 
 class ProxyManager:
@@ -247,7 +179,7 @@ class TelegramFarm:
         return self.proxy_manager.load_proxies()
 
     def get_countries_with_prices(self):
-        """Возвращает список стран с ценами и русскими названиями"""
+        """Возвращает список стран с ценами для бота"""
         raw_data = self.tiger_client.get_prices_from_site()
         if not raw_data:
             return None
@@ -256,17 +188,24 @@ class TelegramFarm:
         for item in raw_data:
             # Пытаемся получить ID и цену из разных форматов
             country_id = item.get('country_id') or item.get('id')
+            country_name = item.get('name') or item.get('country')
             price = item.get('price') or item.get('cost', 0)
             
-            if country_id is not None:
-                name = get_country_name_ru(country_id)
+            if country_id is not None and country_name:
                 result.append({
                     'id': str(country_id),
-                    'name': name,
+                    'name': country_name,
+                    'price': float(price)
+                })
+            elif country_id is not None:
+                # Если нет названия, используем ID
+                result.append({
+                    'id': str(country_id),
+                    'name': f"Страна {country_id}",
                     'price': float(price)
                 })
 
-        # Сортируем по цене (дешёвые сверху)
+        # Сортируем по цене
         result.sort(key=lambda x: x['price'])
         return result
 
