@@ -5,6 +5,7 @@ import shutil
 import requests
 import socks
 import asyncio
+import re
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
@@ -27,21 +28,32 @@ class TigerSMSClient:
     def login(self):
         """Автоматический вход на сайт Tiger SMS"""
         if self.logged_in:
+            print("✅ Уже залогинены")
             return True
 
         print("🔐 Выполняю вход на Tiger SMS...")
-        
-        # Сначала получаем CSRF-токен
+        print(f"📧 Email: {self.email}")
+
+        # Получаем главную страницу для CSRF-токена
         try:
-            response = self.session.get("https://tiger-sms.com/login")
-            # Извлекаем CSRF-токен из HTML (он в meta-теге или в форме)
-            import re
-            csrf_match = re.search(r'name="_token" value="([^"]+)"', response.text)
-            if not csrf_match:
-                # Пробуем другой вариант
-                csrf_match = re.search(r'csrf-token" content="([^"]+)"', response.text)
+            response = self.session.get("https://tiger-sms.com/login", timeout=30)
             
-            csrf_token = csrf_match.group(1) if csrf_match else ""
+            # Ищем CSRF-токен в HTML
+            csrf_token = None
+            
+            # Вариант 1: meta tag
+            meta_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', response.text)
+            if meta_match:
+                csrf_token = meta_match.group(1)
+            
+            # Вариант 2: форма
+            if not csrf_token:
+                form_match = re.search(r'<input type="hidden" name="_token" value="([^"]+)"', response.text)
+                if form_match:
+                    csrf_token = form_match.group(1)
+            
+            print(f"CSRF токен: {csrf_token[:50] if csrf_token else 'не найден'}...")
+            
         except Exception as e:
             print(f"Ошибка получения CSRF: {e}")
             csrf_token = ""
@@ -63,12 +75,17 @@ class TigerSMSClient:
             response = self.session.post("https://tiger-sms.com/login", data=login_data, headers=headers, timeout=30)
             
             # Проверяем успешность входа
-            if response.status_code == 200 and 'dashboard' in response.text.lower():
-                self.logged_in = True
-                print("✅ Успешный вход на Tiger SMS")
-                return True
+            if response.status_code == 200:
+                # Проверяем, есть ли в ответе индикатор успешного входа
+                if 'dashboard' in response.text.lower() or 'profile' in response.text.lower():
+                    self.logged_in = True
+                    print("✅ Успешный вход на Tiger SMS")
+                    return True
+                else:
+                    print(f"❌ Ошибка входа: неверный ответ")
+                    return False
             else:
-                print(f"❌ Ошибка входа: {response.status_code}")
+                print(f"❌ Ошибка входа: статус {response.status_code}")
                 return False
         except Exception as e:
             print(f"❌ Ошибка при входе: {e}")
@@ -114,6 +131,9 @@ class TigerSMSClient:
             if response.status_code == 200:
                 data = response.json()
                 print(f"✅ Получены цены с сайта: {len(data)} стран")
+                # Выводим первые 5 стран для проверки
+                for item in data[:5]:
+                    print(f"  {item.get('name', item.get('country', '?'))} - {item.get('price', item.get('cost', 0))} руб")
                 return data
             else:
                 print(f"Ошибка API: {response.text[:200]}")
