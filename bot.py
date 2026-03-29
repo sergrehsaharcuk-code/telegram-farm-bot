@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 WAITING_PHONE, WAITING_CODE = range(2)
 
-farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
+TIGER_EMAIL = "sergrehsaharcuk@gmail.com"
+TIGER_PASSWORD = "01102008HiSer"
+farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_EMAIL, TIGER_PASSWORD)
 
 
 def clean_phone_number(raw_phone):
