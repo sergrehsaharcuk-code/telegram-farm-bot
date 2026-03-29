@@ -5,7 +5,6 @@ import shutil
 import requests
 import socks
 import asyncio
-import re
 from datetime import datetime, timedelta
 from telethon import TelegramClient
 from telethon.errors import PhoneCodeInvalidError, FloodWaitError
@@ -13,91 +12,94 @@ from telethon.errors import PhoneCodeInvalidError, FloodWaitError
 from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
 
 
+# Словарь русских названий стран (необходим, так как API не даёт названия)
+COUNTRY_NAMES_RU = {
+    "31": "Азербайджан",
+    "90": "Соломоновы Острова",
+    "8": "Албания",
+    "188": "Коста-Рика",
+    "41": "Аргентина",
+    "19": "Нидерланды",
+    "115": "Австралия",
+    "93": "Пакистан",
+    "137": "Эстония",
+    "38": "Камбоджа",
+    "21": "Лаос",
+    "61": "Гвинея",
+    "0": "Россия",
+    "1": "Украина",
+    "10": "Казахстан",
+    "100": "США",
+    "1001": "Великобритания",
+    "101": "Германия",
+    "102": "Франция",
+    "103": "Италия",
+    "104": "Испания",
+    "105": "Турция",
+    "106": "Израиль",
+    "107": "ОАЭ",
+    "108": "Индия",
+    "109": "Китай",
+    "110": "Япония",
+    "111": "Южная Корея",
+    "112": "Бразилия",
+    "113": "Мексика",
+    "114": "Канада",
+    "116": "Нидерланды",
+    "117": "Швеция",
+    "118": "Норвегия",
+    "119": "Финляндия",
+    "120": "Дания",
+    "121": "Польша",
+    "122": "Чехия",
+    "123": "Австрия",
+    "124": "Швейцария",
+    "125": "Бельгия",
+    "126": "Португалия",
+    "127": "Греция",
+    "128": "Венгрия",
+    "129": "Румыния",
+    "130": "Болгария",
+    "131": "Сербия",
+    "132": "Хорватия",
+    "133": "Словакия",
+    "134": "Словения",
+    "135": "Литва",
+    "136": "Латвия",
+    "138": "Ирландия",
+    "139": "Новая Зеландия",
+    "140": "ЮАР",
+    "141": "Египет",
+    "142": "Саудовская Аравия",
+    "143": "Индонезия",
+    "144": "Малайзия",
+    "145": "Сингапур",
+    "146": "Филиппины",
+    "147": "Вьетнам",
+    "148": "Таиланд",
+    "149": "Пакистан",
+    "150": "Бангладеш",
+}
+
+
+def get_country_name(country_id):
+    """Возвращает русское название страны по ID"""
+    return COUNTRY_NAMES_RU.get(str(country_id), f"Страна {country_id}")
+
+
 class TigerSMSClient:
-    """Клиент для работы с Tiger SMS API с автоматическим логином"""
+    """Клиент для работы с Tiger SMS API (без логина)"""
 
-    def __init__(self, api_key, email, password):
+    def __init__(self, api_key):
         self.api_key = api_key
-        self.email = email
-        self.password = password
         self.old_api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
-        self.new_api_url = "https://tiger-sms.com/api/v2/services/tg/prices"
-        self.session = requests.Session()
-        self.logged_in = False
-
-    def login(self):
-        """Автоматический вход на сайт Tiger SMS"""
-        if self.logged_in:
-            print("✅ Уже залогинены")
-            return True
-
-        print("🔐 Выполняю вход на Tiger SMS...")
-        print(f"📧 Email: {self.email}")
-
-        # Получаем главную страницу для CSRF-токена
-        try:
-            response = self.session.get("https://tiger-sms.com/login", timeout=30)
-            
-            # Ищем CSRF-токен в HTML
-            csrf_token = None
-            
-            # Вариант 1: meta tag
-            meta_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', response.text)
-            if meta_match:
-                csrf_token = meta_match.group(1)
-            
-            # Вариант 2: форма
-            if not csrf_token:
-                form_match = re.search(r'<input type="hidden" name="_token" value="([^"]+)"', response.text)
-                if form_match:
-                    csrf_token = form_match.group(1)
-            
-            print(f"CSRF токен: {csrf_token[:50] if csrf_token else 'не найден'}...")
-            
-        except Exception as e:
-            print(f"Ошибка получения CSRF: {e}")
-            csrf_token = ""
-
-        # Данные для входа
-        login_data = {
-            'email': self.email,
-            'password': self.password,
-            '_token': csrf_token,
-        }
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-            'Referer': 'https://tiger-sms.com/login',
-        }
-
-        try:
-            response = self.session.post("https://tiger-sms.com/login", data=login_data, headers=headers, timeout=30)
-            
-            # Проверяем успешность входа
-            if response.status_code == 200:
-                # Проверяем, есть ли в ответе индикатор успешного входа
-                if 'dashboard' in response.text.lower() or 'profile' in response.text.lower():
-                    self.logged_in = True
-                    print("✅ Успешный вход на Tiger SMS")
-                    return True
-                else:
-                    print(f"❌ Ошибка входа: неверный ответ")
-                    return False
-            else:
-                print(f"❌ Ошибка входа: статус {response.status_code}")
-                return False
-        except Exception as e:
-            print(f"❌ Ошибка при входе: {e}")
-            return False
 
     def _request_old(self, params):
-        """Старый API для покупки номеров и баланса"""
         params['api_key'] = self.api_key
         try:
             response = requests.get(self.old_api_url, params=params, timeout=30)
             result = response.text.strip()
-            print(f"Tiger SMS (old): {result[:200]}")
+            print(f"Tiger SMS: {result[:200]}")
             return result
         except Exception as e:
             print(f"Tiger SMS ошибка: {e}")
@@ -112,34 +114,38 @@ class TigerSMSClient:
                 return None
         return None
 
-    def get_prices_from_site(self):
-        """Получает цены с сайта через авторизованную сессию"""
-        if not self.login():
-            print("❌ Не удалось войти на сайт")
+    def get_prices(self):
+        """Получает цены через старый API"""
+        result = self._request_old({'action': 'getPrices', 'service': 'tg'})
+        if not result:
             return None
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': 'https://tiger-sms.com/ru',
-        }
         
         try:
-            response = self.session.get(self.new_api_url, headers=headers, timeout=15)
-            print(f"API ответ: {response.status_code}")
-            if response.status_code == 200:
-                data = response.json()
-                print(f"✅ Получены цены с сайта: {len(data)} стран")
-                # Выводим первые 5 стран для проверки
-                for item in data[:5]:
-                    print(f"  {item.get('name', item.get('country', '?'))} - {item.get('price', item.get('cost', 0))} руб")
-                return data
-            else:
-                print(f"Ошибка API: {response.text[:200]}")
-                return None
+            data = json.loads(result)
+            prices = []
+            
+            for country_id, services in data.items():
+                if 'tg' in services:
+                    tg_info = services['tg']
+                    
+                    if isinstance(tg_info, list) and len(tg_info) > 0:
+                        price = float(tg_info[0].get('cost', 0))
+                    else:
+                        price = float(tg_info.get('cost', 0))
+                    
+                    name = get_country_name(country_id)
+                    
+                    prices.append({
+                        'id': country_id,
+                        'name': name,
+                        'price': price
+                    })
+            
+            prices.sort(key=lambda x: x['price'])
+            print(f"✅ Получены цены для {len(prices)} стран")
+            return prices
         except Exception as e:
-            print(f"Ошибка получения цен с сайта: {e}")
+            print(f"❌ Ошибка: {e}")
             return None
 
     def buy_number(self, country_id, operator=None):
@@ -235,14 +241,14 @@ class ProxyManager:
 
 
 class TelegramFarm:
-    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir, tiger_email, tiger_password):
+    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir):
         self.api_id = api_id
         self.api_hash = api_hash
         self.accounts_dir = accounts_dir
         self.sessions_dir = sessions_dir
         self.pending_registrations = {}
         self.proxy_manager = ProxyManager()
-        self.tiger_client = TigerSMSClient(TIGER_API_KEY, tiger_email, tiger_password)
+        self.tiger_client = TigerSMSClient(TIGER_API_KEY)
 
         os.makedirs(self.accounts_dir, exist_ok=True)
         os.makedirs(self.sessions_dir, exist_ok=True)
@@ -252,28 +258,7 @@ class TelegramFarm:
 
     def get_countries_with_prices(self):
         """Возвращает список стран с ценами для бота"""
-        raw_data = self.tiger_client.get_prices_from_site()
-        if not raw_data:
-            return None
-
-        result = []
-        for item in raw_data:
-            country_id = item.get('country_id') or item.get('id')
-            country_name = item.get('name') or item.get('country')
-            price = item.get('price') or item.get('cost', 0)
-            
-            if country_id is not None:
-                if not country_name:
-                    country_name = f"Страна {country_id}"
-                
-                result.append({
-                    'id': str(country_id),
-                    'name': country_name,
-                    'price': float(price)
-                })
-
-        result.sort(key=lambda x: x['price'])
-        return result
+        return self.tiger_client.get_prices()
 
     def get_balance(self):
         return self.tiger_client.get_balance()
