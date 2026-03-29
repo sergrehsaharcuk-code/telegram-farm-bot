@@ -13,18 +13,66 @@ from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
 
 
 class TigerSMSClient:
-    """Клиент для работы с Tiger SMS API"""
+    """Клиент для работы с Tiger SMS API с автоматическим логином"""
 
-    def __init__(self, api_key):
+    def __init__(self, api_key, email, password):
         self.api_key = api_key
+        self.email = email
+        self.password = password
         self.old_api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
         self.new_api_url = "https://tiger-sms.com/api/v2/services/tg/prices"
+        self.session = requests.Session()
+        self.logged_in = False
+
+    def login(self):
+        """Автоматический вход на сайт Tiger SMS"""
+        if self.logged_in:
+            return True
+
+        print("🔐 Выполняю вход на Tiger SMS...")
         
-        # Куки для авторизации на сайте (получены из браузера)
-        self.cookies = {
-            'tigersms_session': 'eyJpdiI6InNhVTFBbEswMXBEYlp5c0F0ZTJDYUE9PSIsInZhbHVlIjoiQTlNLy9IT3d3SXB4L2JReE1wVmJieTRjUnlYTU5xeXcxZkdtY09pWG5QdWN4bTdmZDkxYzV0MGkzKyt0SHprbHg1cjJBSjU0b2VrSVZYc3lCMXFxZVJNYVpzbllreVdUajk0amRRN3JUUDdIS3I3cnN5aXU4U1psVGpkRkNWeGkiLCJtYWMiOiIwMmEzMmVlMjA0Njc2MTgwNzgwYTUzNzkyZTQ4ZDc3YzZiNTM3MTQxNGQzMmM0ZGNmOTllMmViOGU0MWJhOWM4IiwidGFnIjoiIn0%3D',
-            'XSRF-TOKEN': 'eyJpdiI6IndvL3FhL3JwMVhWVzVkMTBkRlVmK1E9PSIsInZhbHVlIjoiVGt2QkJzYUtpWFJWK0M1KzVUenpsMHhkSm1kcGpyeHo0UkVJOVRKWmRpSE96c0JST2ZOeDFyUUk5dGYwdEp0MXQzUVZ1eEhUbWcyY0JjeHVYRldMazVhai9JZjR0emNyNGFzaVVQYzZ0YjloYWYxWDYzYjRBSDFFT0lDalcyelAiLCJtYWMiOiJlNGVjYjZmM2FlYjBjMTg2NmRlYjRhNmZlZDA5NDhlNTY4M2Q2Y2NlYWYzMjg2ZGFjODY4YWI5NWEyMDE3YjNkIiwidGFnIjoiIn0%3D',
+        # Сначала получаем CSRF-токен
+        try:
+            response = self.session.get("https://tiger-sms.com/login")
+            # Извлекаем CSRF-токен из HTML (он в meta-теге или в форме)
+            import re
+            csrf_match = re.search(r'name="_token" value="([^"]+)"', response.text)
+            if not csrf_match:
+                # Пробуем другой вариант
+                csrf_match = re.search(r'csrf-token" content="([^"]+)"', response.text)
+            
+            csrf_token = csrf_match.group(1) if csrf_match else ""
+        except Exception as e:
+            print(f"Ошибка получения CSRF: {e}")
+            csrf_token = ""
+
+        # Данные для входа
+        login_data = {
+            'email': self.email,
+            'password': self.password,
+            '_token': csrf_token,
         }
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://tiger-sms.com/login',
+        }
+
+        try:
+            response = self.session.post("https://tiger-sms.com/login", data=login_data, headers=headers, timeout=30)
+            
+            # Проверяем успешность входа
+            if response.status_code == 200 and 'dashboard' in response.text.lower():
+                self.logged_in = True
+                print("✅ Успешный вход на Tiger SMS")
+                return True
+            else:
+                print(f"❌ Ошибка входа: {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"❌ Ошибка при входе: {e}")
+            return False
 
     def _request_old(self, params):
         """Старый API для покупки номеров и баланса"""
@@ -48,7 +96,11 @@ class TigerSMSClient:
         return None
 
     def get_prices_from_site(self):
-        """Получает цены напрямую с сайта Tiger SMS через API с авторизацией"""
+        """Получает цены с сайта через авторизованную сессию"""
+        if not self.login():
+            print("❌ Не удалось войти на сайт")
+            return None
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'application/json',
@@ -57,7 +109,7 @@ class TigerSMSClient:
         }
         
         try:
-            response = requests.get(self.new_api_url, headers=headers, cookies=self.cookies, timeout=15)
+            response = self.session.get(self.new_api_url, headers=headers, timeout=15)
             print(f"API ответ: {response.status_code}")
             if response.status_code == 200:
                 data = response.json()
@@ -163,14 +215,14 @@ class ProxyManager:
 
 
 class TelegramFarm:
-    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir):
+    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir, tiger_email, tiger_password):
         self.api_id = api_id
         self.api_hash = api_hash
         self.accounts_dir = accounts_dir
         self.sessions_dir = sessions_dir
         self.pending_registrations = {}
         self.proxy_manager = ProxyManager()
-        self.tiger_client = TigerSMSClient(TIGER_API_KEY)
+        self.tiger_client = TigerSMSClient(TIGER_API_KEY, tiger_email, tiger_password)
 
         os.makedirs(self.accounts_dir, exist_ok=True)
         os.makedirs(self.sessions_dir, exist_ok=True)
@@ -186,26 +238,20 @@ class TelegramFarm:
 
         result = []
         for item in raw_data:
-            # Пытаемся получить ID и цену из разных форматов
             country_id = item.get('country_id') or item.get('id')
             country_name = item.get('name') or item.get('country')
             price = item.get('price') or item.get('cost', 0)
             
-            if country_id is not None and country_name:
+            if country_id is not None:
+                if not country_name:
+                    country_name = f"Страна {country_id}"
+                
                 result.append({
                     'id': str(country_id),
                     'name': country_name,
                     'price': float(price)
                 })
-            elif country_id is not None:
-                # Если нет названия, используем ID
-                result.append({
-                    'id': str(country_id),
-                    'name': f"Страна {country_id}",
-                    'price': float(price)
-                })
 
-        # Сортируем по цене
         result.sort(key=lambda x: x['price'])
         return result
 
