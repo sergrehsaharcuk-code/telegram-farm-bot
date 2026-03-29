@@ -4,7 +4,7 @@ API_HASH = "e41d1f3aa94f97f07e5d4e8126cfa35e"
 ADMIN_IDS = [1526536345]
 
 # Tiger SMS API Key
-TIGER_API_KEY = "5ISQtpVENAT4WoIHx8LfVRyPCqKquAx5"
+TIGER_API_KEY = "5lSQtpVENAT4WoIHx8LfVRyPCqKquAx5"
 
 import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
