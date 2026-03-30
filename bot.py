@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WAITING_PHONE, WAITING_CODE, WAITING_QTY = range(3)
+WAITING_PHONE, WAITING_CODE = range(2)
 
 farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
 
@@ -86,6 +86,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "auto_farm":
         await auto_farm(query, context)
+    elif data == "sort_alpha":
+        await show_offers_sorted(query, context, sort_by="alpha")
+    elif data == "sort_price":
+        await show_offers_sorted(query, context, sort_by="price")
     elif data.startswith("buy_offer_"):
         parts = data.replace("buy_offer_", "").split("_")
         country_id = parts[0]
@@ -113,7 +117,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def auto_farm(query, context):
-    """Показывает все предложения (страна + оператор + цена)"""
+    """Показывает выбор сортировки"""
     await query.edit_message_text("🌍 Загружаю предложения...")
 
     offers = farm.get_all_offers()
@@ -122,23 +126,57 @@ async def auto_farm(query, context):
         await query.edit_message_text("❌ Ошибка связи с Tiger SMS.\n\nПроверьте API ключ и баланс.")
         return
 
-    # Сохраняем в context
-    context.user_data['offers'] = offers
+    # Сохраняем предложения в context
+    context.user_data['all_offers'] = offers
 
-    keyboard = []
-    for item in offers[:20]:  # показываем 20 самых дешёвых
-        display = f"📱 {item['name']} ({item['operator']}) — {item['price']:.2f} ₽"
-        callback = f"buy_offer_{item['id']}_{item['operator']}"
-        keyboard.append([InlineKeyboardButton(display, callback_data=callback)])
-
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    keyboard = [
+        [InlineKeyboardButton("📋 Все страны (по алфавиту)", callback_data="sort_alpha")],
+        [InlineKeyboardButton("💰 Сначала дешёвые", callback_data="sort_price")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back")],
+    ]
 
     balance = farm.get_balance()
     balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
 
     await query.edit_message_text(
-        f"💰 **Выберите предложение:**\n\n{balance_text}\n\n"
-        f"*Самые дешёвые варианты сверху*",
+        f"💰 **Выберите способ сортировки:**\n\n{balance_text}\n\n"
+        f"*Всего предложений: {len(offers)}*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def show_offers_sorted(query, context, sort_by):
+    """Показывает предложения с выбранной сортировкой"""
+    offers = context.user_data.get('all_offers')
+    if not offers:
+        await query.edit_message_text("❌ Данные не найдены, попробуйте снова")
+        return
+
+    if sort_by == "alpha":
+        # Сортировка по названию страны (алфавит)
+        offers_sorted = sorted(offers, key=lambda x: x['name'])
+        sort_name = "по алфавиту"
+    else:
+        # Сортировка по цене
+        offers_sorted = sorted(offers, key=lambda x: x['price'])
+        sort_name = "по возрастанию цены"
+
+    # Показываем первые 20 предложений
+    keyboard = []
+    for item in offers_sorted[:20]:
+        display = f"📱 {item['name']} ({item['operator']}) — {item['price']:.2f} ₽"
+        callback = f"buy_offer_{item['id']}_{item['operator']}"
+        keyboard.append([InlineKeyboardButton(display, callback_data=callback)])
+
+    keyboard.append([InlineKeyboardButton("🔙 Назад к сортировке", callback_data="auto_farm")])
+
+    balance = farm.get_balance()
+    balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
+
+    await query.edit_message_text(
+        f"💰 **Предложения ({sort_name}):**\n\n{balance_text}\n\n"
+        f"*Показаны первые 20 из {len(offers_sorted)}*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
@@ -366,6 +404,9 @@ async def show_help(query, context):
         "🤖 *Telegram Farm Bot*\n\n"
         "1️⃣ *Автоферма*\n"
         "   • Нажми «АВТОФЕРМА»\n"
+        "   • Выбери сортировку:\n"
+        "     - 📋 Все страны (по алфавиту)\n"
+        "     - 💰 Сначала дешёвые\n"
         "   • Выбери предложение (страна + оператор + цена)\n"
         "   • Бот купит номер и зарегистрирует аккаунт\n\n"
         "2️⃣ *Ручная регистрация*\n"
@@ -411,7 +452,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     print("🤖 Бот запущен и готов к работе!")
     print("📁 Аккаунты:", ACCOUNTS_DIR)
-    print("💸 Показываются все операторы с разными ценами")
+    print("📋 Доступна сортировка: по алфавиту и по цене")
     print("=" * 50)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
