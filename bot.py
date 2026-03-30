@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 WAITING_PHONE, WAITING_CODE = range(2)
 
+ITEMS_PER_PAGE = 20  # Количество предложений на странице
+
 farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
 
 
@@ -87,9 +89,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "auto_farm":
         await auto_farm(query, context)
     elif data == "sort_alpha":
-        await show_offers_sorted(query, context, sort_by="alpha")
+        await show_offers_paginated(query, context, sort_by="alpha", page=0)
     elif data == "sort_price":
-        await show_offers_sorted(query, context, sort_by="price")
+        await show_offers_paginated(query, context, sort_by="price", page=0)
+    elif data.startswith("page_"):
+        parts = data.split("_")
+        sort_by = parts[1]
+        page = int(parts[2])
+        await show_offers_paginated(query, context, sort_by=sort_by, page=page)
     elif data.startswith("buy_offer_"):
         parts = data.replace("buy_offer_", "").split("_")
         country_id = parts[0]
@@ -146,29 +153,43 @@ async def auto_farm(query, context):
     )
 
 
-async def show_offers_sorted(query, context, sort_by):
-    """Показывает предложения с выбранной сортировкой"""
+async def show_offers_paginated(query, context, sort_by, page):
+    """Показывает предложения с пагинацией"""
     offers = context.user_data.get('all_offers')
     if not offers:
         await query.edit_message_text("❌ Данные не найдены, попробуйте снова")
         return
 
     if sort_by == "alpha":
-        # Сортировка по названию страны (алфавит)
         offers_sorted = sorted(offers, key=lambda x: x['name'])
         sort_name = "по алфавиту"
     else:
-        # Сортировка по цене
         offers_sorted = sorted(offers, key=lambda x: x['price'])
         sort_name = "по возрастанию цены"
 
-    # Показываем первые 20 предложений
+    total_pages = (len(offers_sorted) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    start = page * ITEMS_PER_PAGE
+    end = min(start + ITEMS_PER_PAGE, len(offers_sorted))
+    page_offers = offers_sorted[start:end]
+
+    # Строим кнопки для предложений на текущей странице
     keyboard = []
-    for item in offers_sorted[:20]:
+    for item in page_offers:
         display = f"📱 {item['name']} ({item['operator']}) — {item['price']:.2f} ₽"
         callback = f"buy_offer_{item['id']}_{item['operator']}"
         keyboard.append([InlineKeyboardButton(display, callback_data=callback)])
 
+    # Кнопки навигации
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀ Назад", callback_data=f"page_{sort_by}_{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("Вперёд ▶", callback_data=f"page_{sort_by}_{page+1}"))
+
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+
+    # Кнопка возврата к сортировке
     keyboard.append([InlineKeyboardButton("🔙 Назад к сортировке", callback_data="auto_farm")])
 
     balance = farm.get_balance()
@@ -176,7 +197,7 @@ async def show_offers_sorted(query, context, sort_by):
 
     await query.edit_message_text(
         f"💰 **Предложения ({sort_name}):**\n\n{balance_text}\n\n"
-        f"*Показаны первые 20 из {len(offers_sorted)}*",
+        f"*Страница {page+1} из {total_pages} | Показано {len(page_offers)} из {len(offers_sorted)}*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN
     )
@@ -407,6 +428,7 @@ async def show_help(query, context):
         "   • Выбери сортировку:\n"
         "     - 📋 Все страны (по алфавиту)\n"
         "     - 💰 Сначала дешёвые\n"
+        "   • Листай страницы (◀ Вперёд/Назад ▶)\n"
         "   • Выбери предложение (страна + оператор + цена)\n"
         "   • Бот купит номер и зарегистрирует аккаунт\n\n"
         "2️⃣ *Ручная регистрация*\n"
@@ -452,7 +474,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     print("🤖 Бот запущен и готов к работе!")
     print("📁 Аккаунты:", ACCOUNTS_DIR)
-    print("📋 Доступна сортировка: по алфавиту и по цене")
+    print("📋 Пагинация: по 20 предложений на странице")
     print("=" * 50)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
