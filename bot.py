@@ -1,385 +1,617 @@
-import os
-import json
-import zipfile
-import shutil
-import requests
-import socks
 import asyncio
-from datetime import datetime, timedelta
-from telethon import TelegramClient
-from telethon.errors import PhoneCodeInvalidError, FloodWaitError
+import os
+import re
+import zipfile
+import json
+import qrcode
+import logging
+from io import BytesIO
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 
-from config import API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR, TIGER_API_KEY
+from config import BOT_TOKEN, ADMIN_IDS, API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR
+from farm_core import TelegramFarm
 
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Словарь русских названий стран
-COUNTRY_NAMES_RU = {
-    "31": "Азербайджан",
-    "90": "Соломоновы Острова",
-    "8": "Албания",
-    "188": "Коста-Рика",
-    "41": "Аргентина",
-    "19": "Нидерланды",
-    "115": "Австралия",
-    "93": "Пакистан",
-    "137": "Эстония",
-    "38": "Камбоджа",
-    "21": "Лаос",
-    "61": "Гвинея",
-    "0": "Россия",
-    "1": "Украина",
-    "10": "Казахстан",
-    "100": "США",
-    "1001": "Великобритания",
-    "101": "Германия",
-    "102": "Франция",
-    "103": "Италия",
-    "104": "Испания",
-    "105": "Турция",
-    "106": "Израиль",
-    "107": "ОАЭ",
-    "108": "Индия",
-    "109": "Китай",
-    "110": "Япония",
-    "111": "Южная Корея",
-    "112": "Бразилия",
-    "113": "Мексика",
-    "114": "Канада",
-    "116": "Нидерланды",
-    "117": "Швеция",
-    "118": "Норвегия",
-    "119": "Финляндия",
-    "120": "Дания",
-    "121": "Польша",
-    "122": "Чехия",
-    "123": "Австрия",
-    "124": "Швейцария",
-    "125": "Бельгия",
-    "126": "Португалия",
-    "127": "Греция",
-    "128": "Венгрия",
-    "129": "Румыния",
-    "130": "Болгария",
-    "131": "Сербия",
-    "132": "Хорватия",
-    "133": "Словакия",
-    "134": "Словения",
-    "135": "Литва",
-    "136": "Латвия",
-    "138": "Ирландия",
-    "139": "Новая Зеландия",
-    "140": "ЮАР",
-    "141": "Египет",
-    "142": "Саудовская Аравия",
-    "143": "Индонезия",
-    "144": "Малайзия",
-    "145": "Сингапур",
-    "146": "Филиппины",
-    "147": "Вьетнам",
-    "148": "Таиланд",
-    "149": "Пакистан",
-    "150": "Бангладеш",
-}
+WAITING_PHONE, WAITING_CODE, WAITING_QTY = range(3)
+
+farm = TelegramFarm(API_ID, API_HASH, ACCOUNTS_DIR, SESSIONS_DIR)
 
 
-def get_country_name(country_id):
-    return COUNTRY_NAMES_RU.get(str(country_id), f"Страна {country_id}")
+def clean_phone_number(raw_phone):
+    phone = re.sub(r'[^\d+]', '', raw_phone)
+    if phone.startswith('8') and len(phone) == 11:
+        phone = '+7' + phone[1:]
+    elif phone.startswith('7') and len(phone) == 11 and not phone.startswith('+'):
+        phone = '+' + phone
+    elif not phone.startswith('+'):
+        phone = '+' + phone
+    return phone
 
 
-class TigerSMSClient:
-    def __init__(self, api_key):
-        self.api_key = api_key
-        self.old_api_url = "https://api.tiger-sms.com/stubs/handler_api.php"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ У вас нет доступа")
+        return
 
-    def _request_old(self, params):
-        params['api_key'] = self.api_key
-        try:
-            response = requests.get(self.old_api_url, params=params, timeout=30)
-            result = response.text.strip()
-            print(f"Tiger SMS: {result[:200]}")
-            return result
-        except Exception as e:
-            print(f"Tiger SMS ошибка: {e}")
-            return None
+    proxies_count = len(farm.proxy_manager.proxies)
+    accounts_count = len(farm.get_accounts_list())
 
-    def get_balance(self):
-        result = self._request_old({'action': 'getBalance'})
-        if result and result.startswith('ACCESS_BALANCE'):
+    keyboard = [
+        [InlineKeyboardButton("📱 Регистрация", callback_data="register")],
+        [InlineKeyboardButton("🤖 АВТОФЕРМА", callback_data="auto_farm")],
+        [InlineKeyboardButton("📦 Мои аккаунты", callback_data="my_accounts")],
+        [InlineKeyboardButton("📦 Все аккаунты", callback_data="export_all")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"🤖 *Telegram Farm Bot*\n\n"
+        f"🌐 Прокси: {proxies_count}\n"
+        f"📁 Аккаунтов: {accounts_count}\n"
+        f"⏳ В процессе: {len(farm.pending_registrations)}",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await query.edit_message_text("❌ У вас нет доступа")
+        return
+
+    data = query.data
+
+    if data == "register":
+        await query.edit_message_text(
+            "📱 Введи номер телефона в любом формате:\n"
+            "Пример: `+79991234567` или `8 999 123-45-67`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        context.user_data['state'] = WAITING_PHONE
+
+    elif data == "auto_farm":
+        await auto_farm(query, context)
+    elif data.startswith("buy_"):
+        country_id = data.replace("buy_", "")
+        await ask_quantity(query, context, country_id)
+    elif data.startswith("qty_"):
+        qty = data.replace("qty_", "")
+        await process_quantity(query, context, qty)
+    elif data == "my_accounts":
+        await show_my_accounts(query, context)
+    elif data == "export_all":
+        await export_all_accounts(query, context)
+    elif data == "stats":
+        await show_stats(query, context)
+    elif data == "help":
+        await show_help(query, context)
+    elif data == "back":
+        await back_to_menu(query, context)
+    elif data.startswith("download_"):
+        filename = data.replace("download_", "")
+        await download_account(query, context, filename)
+    elif data.startswith("qr_"):
+        filename = data.replace("qr_", "") + ".zip"
+        await generate_qr(query, context, filename)
+    elif data.startswith("cancel_reg_"):
+        phone = data.replace("cancel_reg_", "")
+        await cancel_registration(query, context, phone)
+
+
+async def auto_farm(query, context):
+    """Показывает список стран с ценами"""
+    await query.edit_message_text("🌍 Загружаю страны и цены...")
+
+    prices = farm.get_countries_with_prices()
+
+    if not prices:
+        await query.edit_message_text("❌ Ошибка связи с Tiger SMS.\n\nПроверьте API ключ и баланс.")
+        return
+
+    keyboard = []
+    for item in prices[:15]:
+        keyboard.append([
+            InlineKeyboardButton(
+                f"✅ {item['name']} — {item['price']:.2f} ₽",
+                callback_data=f"buy_{item['id']}"
+            )
+        ])
+
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+
+    balance = farm.get_balance()
+    balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
+
+    await query.edit_message_text(
+        f"💰 **Выберите страну:**\n\n{balance_text}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def ask_quantity(query, context, country_id):
+    """Запрашивает количество аккаунтов"""
+    context.user_data['selected_country_id'] = country_id
+    
+    # Получаем название страны
+    prices = farm.get_countries_with_prices()
+    country_name = "выбранная страна"
+    for item in prices:
+        if str(item['id']) == str(country_id):
+            country_name = item['name']
+            break
+    
+    keyboard = [
+        [InlineKeyboardButton("1", callback_data="qty_1"),
+         InlineKeyboardButton("5", callback_data="qty_5"),
+         InlineKeyboardButton("10", callback_data="qty_10")],
+        [InlineKeyboardButton("25", callback_data="qty_25"),
+         InlineKeyboardButton("50", callback_data="qty_50"),
+         InlineKeyboardButton("100", callback_data="qty_100")],
+        [InlineKeyboardButton("✏️ Своё число", callback_data="qty_custom")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="auto_farm")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    balance = farm.get_balance()
+    balance_text = f"💰 Баланс: {balance:.2f} руб" if balance else "💰 Баланс: неизвестен"
+    
+    await query.edit_message_text(
+        f"📱 *{country_name}*\n\n"
+        f"💸 *Сколько аккаунтов купить?*\n\n"
+        f"{balance_text}\n\n"
+        f"💰 Примерная стоимость: 1 аккаунт ~5-15 руб",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def process_quantity(query, context, qty):
+    """Обрабатывает выбор количества"""
+    country_id = context.user_data.get('selected_country_id')
+    if not country_id:
+        await query.edit_message_text("❌ Ошибка: страна не выбрана")
+        return
+    
+    if qty == "custom":
+        await query.edit_message_text(
+            "✏️ *Введи количество аккаунтов* (от 1 до 500)\n\n"
+            "Просто напиши число в чат:",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        context.user_data['state'] = WAITING_QTY
+        return
+    
+    try:
+        quantity = int(qty)
+        await buy_multiple_numbers(query, context, country_id, quantity)
+    except ValueError:
+        await query.edit_message_text("❌ Неверное число")
+
+
+async def buy_multiple_numbers(query, context, country_id, quantity):
+    """Покупает указанное количество аккаунтов"""
+    if quantity < 1 or quantity > 500:
+        await query.edit_message_text("❌ Введи число от 1 до 500")
+        return
+    
+    await query.edit_message_text(
+        f"🤖 *Покупаю {quantity} аккаунтов...*\n\n"
+        f"⏳ Это может занять до {quantity * 2} минут\n\n"
+        f"Прогресс будет отображаться здесь...",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    
+    success_count = 0
+    fail_count = 0
+    results = []
+    
+    for i in range(quantity):
+        # Обновляем статус каждые 5 аккаунтов
+        if i % 5 == 0 and i > 0:
             try:
-                return float(result.split(':')[1])
+                await query.edit_message_text(
+                    f"🤖 *Покупаю {quantity} аккаунтов...*\n\n"
+                    f"📊 Прогресс: {i}/{quantity}\n"
+                    f"✅ Успешно: {success_count}\n"
+                    f"❌ Ошибок: {fail_count}\n\n"
+                    f"⏳ Осталось примерно {(quantity - i) * 2} минут",
+                    parse_mode=ParseMode.MARKDOWN
+                )
             except:
-                return None
-        return None
-
-    def get_prices(self):
-        result = self._request_old({'action': 'getPrices', 'service': 'tg'})
+                pass
         
-        print(f"===== ДЕБАГ: ОТВЕТ ОТ TIGER API =====")
-        print(result)
-        print(f"=====================================")
-
-        if not result:
-            return None
+        print(f"📱 Покупаю аккаунт {i+1}/{quantity}...")
         
-        try:
-            data = json.loads(result)
-            prices = []
-            for country_id, services in data.items():
-                if 'tg' in services:
-                    tg_info = services['tg']
-                    if isinstance(tg_info, list) and len(tg_info) > 0:
-                        price = float(tg_info[0].get('cost', 0))
-                    else:
-                        price = float(tg_info.get('cost', 0))
-                    
-                    prices.append({
-                        'id': country_id,
-                        'name': get_country_name(country_id),
-                        'price': price
-                    })
-            
-            prices.sort(key=lambda x: x['price'])
-            print(f"✅ Получены цены для {len(prices)} стран")
-            return prices
-        except Exception as e:
-            print(f"❌ Ошибка парсинга: {e}")
-            return None
-
-    def buy_number(self, country_id, operator=None):
-        params = {
-            'action': 'getNumber',
-            'service': 'tg',
-            'country': country_id
-        }
-        if operator:
-            params['operator'] = operator
-
-        result = self._request_old(params)
-        if result and result.startswith('ACCESS_NUMBER'):
-            parts = result.split(':')
-            if len(parts) >= 3:
-                return parts[1], parts[2]
-        return None, None
-
-    def get_code_status(self, number_id):
-        return self._request_old({'action': 'getStatus', 'id': number_id})
-
-    def cancel_number(self, number_id):
-        self._request_old({'action': 'setStatus', 'id': number_id, 'status': 8})
-
-
-class ProxyManager:
-    def __init__(self):
-        self.proxies = []
-        self.used_proxies = {}
-        self.max_uses_per_day = 2
-        self.current_index = 0
-
-    def load_proxies(self):
-        url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
-
-        try:
-            print("🌐 Загрузка прокси...")
-            response = requests.get(url, timeout=15)
-            if response.status_code != 200:
-                print("Ошибка загрузки прокси")
-                return 0
-
-            lines = response.text.strip().split('\n')
-            self.proxies = []
-
-            for line in lines[:50]:
-                line = line.strip()
-                if line and ':' in line:
-                    parsed = self._parse_proxy(line)
-                    if parsed:
-                        self.proxies.append(parsed)
-                        print(f"✅ Прокси: {parsed[1]}:{parsed[2]}")
-
-            print(f"✅ Загружено прокси: {len(self.proxies)}")
-            self.current_index = 0
-            return len(self.proxies)
-        except Exception as e:
-            print(f"Ошибка: {e}")
-            return 0
-
-    def _parse_proxy(self, proxy_str):
-        clean_str = proxy_str.replace("socks5://", "").replace("http://", "")
-        parts = clean_str.split(':')
-        try:
-            return (socks.SOCKS5, parts[0], int(parts[1]), True, None, None)
-        except:
-            return None
-
-    def can_use_proxy(self, proxy):
-        if proxy not in self.used_proxies:
-            return True
-        usage = self.used_proxies[proxy]
-        if datetime.now() - usage['last_used'] > timedelta(days=1):
-            del self.used_proxies[proxy]
-            return True
-        return usage['count'] < self.max_uses_per_day
-
-    def mark_used(self, proxy):
-        if proxy not in self.used_proxies:
-            self.used_proxies[proxy] = {'count': 0, 'last_used': datetime.now()}
-        self.used_proxies[proxy]['count'] += 1
-        self.used_proxies[proxy]['last_used'] = datetime.now()
-
-    def get_working_proxy(self):
-        if not self.proxies:
-            return None
-        for _ in range(len(self.proxies)):
-            proxy = self.proxies[self.current_index % len(self.proxies)]
-            self.current_index += 1
-            if self.can_use_proxy(proxy):
-                return proxy
-        return None
-
-
-class TelegramFarm:
-    def __init__(self, api_id, api_hash, accounts_dir, sessions_dir):
-        self.api_id = api_id
-        self.api_hash = api_hash
-        self.accounts_dir = accounts_dir
-        self.sessions_dir = sessions_dir
-        self.pending_registrations = {}
-        self.proxy_manager = ProxyManager()
-        self.tiger_client = TigerSMSClient(TIGER_API_KEY)
-
-        os.makedirs(self.accounts_dir, exist_ok=True)
-        os.makedirs(self.sessions_dir, exist_ok=True)
-
-    def load_proxies(self):
-        return self.proxy_manager.load_proxies()
-
-    def get_countries_with_prices(self):
-        return self.tiger_client.get_prices()
-
-    def get_balance(self):
-        return self.tiger_client.get_balance()
-
-    async def buy_number_by_country_id(self, user_id, country_id):
-        print(f"📱 Покупаю номер в стране {country_id}...")
-
-        number_id, phone = self.tiger_client.buy_number(country_id)
-        if not phone:
-            return False, f"Не удалось купить номер. Попробуй другую страну.", None
-
-        print(f"✅ Номер куплен: {phone}")
-
-        success, msg = await self.start_registration(phone, user_id)
-        if not success:
-            self.tiger_client.cancel_number(number_id)
-            return False, msg, None
-
-        print("⏳ Жду код...")
-        code = await self.wait_for_code(number_id)
-        if not code:
-            self.tiger_client.cancel_number(number_id)
-            return False, "Код не пришёл за 2 минуты", None
-
-        print(f"📨 Код: {code}")
-
-        success, msg, data = await self.complete_registration(phone, code)
+        success, message, account_data = await farm.buy_number_by_country_id(
+            query.from_user.id, country_id
+        )
+        
         if success:
-            return True, msg, data
+            success_count += 1
+            results.append(account_data)
         else:
-            self.tiger_client.cancel_number(number_id)
-            return False, msg, None
+            fail_count += 1
+            print(f"❌ Ошибка: {message}")
+        
+        # Задержка между покупками
+        await asyncio.sleep(15)
+    
+    # Итоговое сообщение
+    if results:
+        await query.message.reply_text(
+            f"✅ *Готово!*\n\n"
+            f"📊 Куплено: {success_count}/{quantity}\n"
+            f"❌ Ошибок: {fail_count}\n\n"
+            f"📦 Отправляю аккаунты...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Отправляем все архивы
+        for account_data in results:
+            zip_file = os.path.join(ACCOUNTS_DIR, f"{account_data['phone'].replace('+', '')}.zip")
+            if os.path.exists(zip_file):
+                with open(zip_file, 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=os.path.basename(zip_file),
+                        caption=f"✅ {account_data['phone']}"
+                    )
+                await asyncio.sleep(1)
+        
+        await query.message.reply_text(
+            f"✅ *Все аккаунты отправлены!*\n\n"
+            f"📁 Они также сохранены в папке `accounts/`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await query.message.reply_text(
+            f"❌ *Не удалось купить ни одного аккаунта*\n\n"
+            f"💰 Проверь баланс на Tiger SMS.\n"
+            f"🔁 Попробуй другую страну или меньшее количество.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    await back_to_menu(query, context)
 
-    async def wait_for_code(self, number_id, timeout=120):
-        start_time = asyncio.get_event_loop().time()
-        while asyncio.get_event_loop().time() - start_time < timeout:
-            result = self.tiger_client.get_code_status(number_id)
-            if result and result.startswith('STATUS_OK'):
-                return result.split(':')[1]
-            elif result and result.startswith('STATUS_WAIT_CODE'):
-                await asyncio.sleep(5)
-            else:
-                await asyncio.sleep(5)
-        return None
 
-    async def start_registration(self, phone, user_id):
-        proxy = self.proxy_manager.get_working_proxy()
+async def show_my_accounts(query, context):
+    accounts = farm.get_accounts_list()
 
-        session_name = f"session_{phone.replace('+', '')}"
-        session_path = os.path.join(self.sessions_dir, session_name)
+    if not accounts:
+        await query.edit_message_text("📭 Нет аккаунтов")
+        return
 
-        if not proxy:
-            return False, "Нет рабочих прокси. Попробуй позже."
+    keyboard = []
+    for acc in accounts:
+        acc_name = acc.replace('.zip', '')
+        keyboard.append([
+            InlineKeyboardButton(f"📱 {acc_name}", callback_data=f"download_{acc}"),
+            InlineKeyboardButton(f"🔲 QR", callback_data=f"qr_{acc}")
+        ])
 
-        print(f"🔌 Используем прокси: {proxy[1]}:{proxy[2]}")
-        client = TelegramClient(session_path, self.api_id, self.api_hash, proxy=proxy)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
+    await query.edit_message_text("📦 Выбери аккаунт:", reply_markup=reply_markup)
+
+
+async def generate_qr(query, context, filename):
+    file_path = os.path.join(ACCOUNTS_DIR, filename)
+
+    if not os.path.exists(file_path):
+        await query.edit_message_text("❌ Аккаунт не найден")
+        return
+
+    await query.edit_message_text("⏳ Генерирую QR-код...")
+
+    try:
+        with zipfile.ZipFile(file_path, 'r') as zf:
+            session_string = None
+            for file in zf.namelist():
+                if file.endswith('info.json'):
+                    with zf.open(file) as f:
+                        info = json.load(f)
+                        session_string = info.get('session_string')
+                        break
+                elif file.endswith('auth_key.txt'):
+                    with zf.open(file) as f:
+                        session_string = f.read().decode('utf-8').strip()
+                        break
+
+        if not session_string:
+            await query.edit_message_text("❌ Не удалось найти session_string в архиве")
+            return
+
+        qr = qrcode.QRCode(box_size=8, border=2)
+        qr.add_data(session_string)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+
+        await query.message.reply_photo(
+            photo=buf,
+            caption=f"🔑 *QR-код для входа*\n\n"
+                    f"📱 *Как войти:*\n"
+                    f"• *Android:* Telegram → «Войти по QR-коду» → сканируй\n"
+                    f"• *iPhone:* Настройки → Устройства → Сканировать QR\n\n"
+                    f"⚠️ QR-код одноразовый!",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        await query.edit_message_text("✅ QR-код отправлен!")
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        return
+
+    text = update.message.text.strip()
+    state = context.user_data.get('state')
+
+    if state == WAITING_PHONE:
+        phone = clean_phone_number(text)
+        if len(phone) < 10 or len(phone) > 16:
+            await update.message.reply_text("❌ Неверный формат номера!\nПример: +79991234567")
+            return
+
+        context.user_data['state'] = None
+        await start_registration(update, context, phone)
+
+    elif state == WAITING_CODE:
+        code = text
+        if not code.isdigit():
+            await update.message.reply_text("❌ Код должен состоять только из цифр")
+            return
+
+        context.user_data['state'] = None
+        await complete_registration(update, context, code)
+
+    elif state == WAITING_QTY:
         try:
-            await asyncio.wait_for(client.connect(), timeout=15)
-            if await client.is_user_authorized():
-                await client.disconnect()
-                return False, "Аккаунт уже авторизован"
-            await client.send_code_request(phone)
-            self.pending_registrations[phone] = {'client': client, 'proxy': proxy}
-            return True, f"Код отправлен на {phone}"
-        except Exception as e:
-            await client.disconnect()
-            return False, f"Ошибка: {str(e)}"
+            quantity = int(text)
+            if quantity < 1 or quantity > 500:
+                await update.message.reply_text("❌ Введи число от 1 до 500")
+                return
+            
+            context.user_data['state'] = None
+            country_id = context.user_data.get('selected_country_id')
+            
+            if not country_id:
+                await update.message.reply_text("❌ Ошибка: страна не выбрана")
+                return
+            
+            # Создаём заглушку query
+            class DummyQuery:
+                def __init__(self, message, from_user):
+                    self.message = message
+                    self.from_user = from_user
+                async def edit_message_text(self, text, **kwargs):
+                    await self.message.reply_text(text)
+                async def answer(self):
+                    pass
+            
+            dummy = DummyQuery(update.message, update.effective_user)
+            await buy_multiple_numbers(dummy, context, country_id, quantity)
+            
+        except ValueError:
+            await update.message.reply_text("❌ Введи целое число")
 
-    async def complete_registration(self, phone, code):
-        if phone not in self.pending_registrations:
-            return False, "Нет ожидающей регистрации", None
+    else:
+        await update.message.reply_text("Нажми /start для начала работы")
 
-        data = self.pending_registrations[phone]
-        client = data['client']
-        proxy = data.get('proxy')
 
-        try:
-            await client.sign_in(phone, code)
-            me = await client.get_me()
-            session_string = client.session.save()
-            if not session_string:
-                return False, "Не удалось получить session_string", None
-            if proxy:
-                self.proxy_manager.mark_used(proxy)
-            await client.disconnect()
-            del self.pending_registrations[phone]
+async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, phone):
+    if phone in farm.pending_registrations:
+        await update.message.reply_text(f"⏳ Регистрация для {phone} уже идёт")
+        return
 
-            folder_name = phone.replace('+', '')
-            account_folder = os.path.join(self.accounts_dir, folder_name)
-            os.makedirs(account_folder, exist_ok=True)
+    success, message = await farm.start_registration(phone, update.effective_user.id)
 
-            with open(os.path.join(account_folder, "auth_key.txt"), "w") as f:
-                f.write(session_string)
+    if not success:
+        await update.message.reply_text(f"❌ {message}")
+        return
 
-            info = {
-                "phone": me.phone,
-                "id": me.id,
-                "first_name": me.first_name,
-                "session_string": session_string,
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            with open(os.path.join(account_folder, "info.json"), "w", encoding="utf-8") as f:
-                json.dump(info, f, ensure_ascii=False, indent=4)
+    context.user_data['waiting_code_phone'] = phone
+    context.user_data['state'] = WAITING_CODE
 
-            session_file = f"{client.session.filename}.session"
-            if os.path.exists(session_file):
-                shutil.copy(session_file, os.path.join(account_folder, f"{folder_name}.session"))
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_reg_{phone}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-            archive_path = os.path.join(self.accounts_dir, f"{folder_name}.zip")
-            with zipfile.ZipFile(archive_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, _, files in os.walk(account_folder):
-                    for file in files:
-                        zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), self.accounts_dir))
+    await update.message.reply_text(
+        f"📨 *{message}*\n\n✏️ Введи код из SMS:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-            return True, f"✅ Аккаунт {phone} готов!", info
-        except PhoneCodeInvalidError:
-            return False, "Неверный код", None
-        except Exception as e:
-            return False, f"Ошибка: {str(e)}", None
 
-    def get_accounts_list(self):
-        accounts = []
-        if os.path.exists(self.accounts_dir):
-            for item in os.listdir(self.accounts_dir):
-                if item.endswith('.zip'):
-                    accounts.append(item)
-        return sorted(accounts, reverse=True)
+async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TYPE, code):
+    phone = context.user_data.get('waiting_code_phone')
+
+    if not phone:
+        await update.message.reply_text("❌ Нет ожидающей регистрации")
+        return
+
+    status_msg = await update.message.reply_text("⏳ Проверяю код...")
+
+    success, message, account_data = await farm.complete_registration(phone, code)
+
+    if success:
+        await status_msg.edit_text(f"{message}\n\n📱 Номер: {account_data['phone']}")
+
+        zip_file = os.path.join(ACCOUNTS_DIR, f"{account_data['phone'].replace('+', '')}.zip")
+        if os.path.exists(zip_file):
+            with open(zip_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=os.path.basename(zip_file),
+                    caption=f"✅ Аккаунт {account_data['phone']} готов!"
+                )
+
+        context.user_data.pop('waiting_code_phone', None)
+    else:
+        await status_msg.edit_text(f"❌ {message}")
+
+
+async def export_all_accounts(query, context):
+    accounts = farm.get_accounts_list()
+
+    if not accounts:
+        await query.edit_message_text("📭 Нет аккаунтов")
+        return
+
+    await query.edit_message_text("📦 Собираю архив...")
+
+    all_zip = os.path.join(ACCOUNTS_DIR, "all_accounts.zip")
+
+    try:
+        with zipfile.ZipFile(all_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for acc in accounts:
+                acc_path = os.path.join(ACCOUNTS_DIR, acc)
+                if os.path.exists(acc_path):
+                    zipf.write(acc_path, acc)
+
+        with open(all_zip, 'rb') as f:
+            await query.message.reply_document(
+                document=f,
+                filename="all_accounts.zip",
+                caption=f"📦 Все аккаунты ({len(accounts)} шт.)"
+            )
+
+        os.remove(all_zip)
+        await back_to_menu(query, context)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {e}")
+
+
+async def download_account(query, context, filename):
+    file_path = os.path.join(ACCOUNTS_DIR, filename)
+
+    if not os.path.exists(file_path):
+        await query.edit_message_text("❌ Файл не найден")
+        return
+
+    with open(file_path, 'rb') as f:
+        await query.message.reply_document(document=f, filename=filename)
+
+    await query.answer("Скачивание начато!")
+
+
+async def cancel_registration(query, context, phone):
+    if phone in farm.pending_registrations:
+        client = farm.pending_registrations[phone]['client']
+        await client.disconnect()
+        del farm.pending_registrations[phone]
+
+    if context.user_data.get('waiting_code_phone') == phone:
+        context.user_data.pop('waiting_code_phone', None)
+
+    context.user_data['state'] = None
+
+    await query.edit_message_text(f"❌ Регистрация {phone} отменена")
+
+
+async def show_stats(query, context):
+    accounts = farm.get_accounts_list()
+    pending = len(farm.pending_registrations)
+    proxies = len(farm.proxy_manager.proxies)
+
+    await query.edit_message_text(
+        f"📊 *Статистика*\n\n"
+        f"🌐 Прокси: {proxies}\n"
+        f"✅ Аккаунтов: {len(accounts)}\n"
+        f"⏳ В процессе: {pending}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back")]]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def show_help(query, context):
+    help_text = (
+        "🤖 *Telegram Farm Bot*\n\n"
+        "*Как продавать аккаунты:*\n\n"
+        "1️⃣ *Автоферма*\n"
+        "   • Нажми «АВТОФЕРМА»\n"
+        "   • Выбери страну\n"
+        "   • Выбери количество (1, 5, 10, 25, 50, 100 или своё число)\n"
+        "   • Бот сам купит номера и зарегистрирует аккаунты\n\n"
+        "2️⃣ *Ручная регистрация*\n"
+        "   • Нажми «Регистрация»\n"
+        "   • Введи номер из Tiger SMS\n"
+        "   • Введи код\n\n"
+        "3️⃣ *Продажа*\n"
+        "   • «Мои аккаунты» → скачать архив (TData)\n"
+        "   • Или нажать «QR» → отправить QR-код покупателю\n\n"
+        f"📁 Папка: {ACCOUNTS_DIR}"
+    )
+
+    await query.edit_message_text(
+        help_text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back")]]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+async def back_to_menu(query, context):
+    accounts_count = len(farm.get_accounts_list())
+    proxies_count = len(farm.proxy_manager.proxies)
+
+    keyboard = [
+        [InlineKeyboardButton("📱 Регистрация", callback_data="register")],
+        [InlineKeyboardButton("🤖 АВТОФЕРМА", callback_data="auto_farm")],
+        [InlineKeyboardButton("📦 Мои аккаунты", callback_data="my_accounts")],
+        [InlineKeyboardButton("📦 Все аккаунты", callback_data="export_all")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")],
+    ]
+
+    await query.edit_message_text(
+        f"🤖 *Telegram Farm Bot*\n\n🌐 Прокси: {proxies_count}\n📁 Аккаунтов: {accounts_count}\n⏳ В процессе: {len(farm.pending_registrations)}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+def main():
+    print("🌐 Загрузка прокси...")
+    farm.load_proxies()
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    print("🤖 Бот запущен и готов к работе!")
+    print("📁 Аккаунты:", ACCOUNTS_DIR)
+    print("💸 Доступна массовая покупка (до 500 аккаунтов за раз)")
+    print("=" * 50)
+
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
